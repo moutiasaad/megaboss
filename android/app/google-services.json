@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1009072881450",
+    "project_id": "megboss",
+    "storage_bucket": "megboss.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1009072881450:android:f59af41acd8b1b2d906853",
+        "android_client_info": {
+          "package_name": "com.example.megaboss"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBck0DlITuOOIlcsEPpzHhWVpXLhtv4dKg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

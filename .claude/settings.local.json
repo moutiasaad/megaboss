@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter pub *)",
+      "Bash(flutter analyze *)",
+      "WebFetch(domain:staging-v2.megaboss.store)",
+      "Bash(dart analyze *)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\mouti\\\\AndroidStudioProjects\\\\megaboss\" -Directory)",
+      "Bash(Select-Object Name)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\mouti\\\\AndroidStudioProjects\\\\megaboss\" -Force)",
+      "Bash(Select-Object Name, PSIsContainer)",
+      "Bash(New-Item -ItemType Directory -Force -Path \"C:\\\\Users\\\\mouti\\\\AndroidStudioProjects\\\\megaboss\\\\lib\\\\features\\\\notifications\\\\data\\\\models\")",
+      "Bash(Out-Null)",
+      "Bash(New-Item -ItemType Directory -Force -Path \"C:\\\\Users\\\\mouti\\\\AndroidStudioProjects\\\\megaboss\\\\lib\\\\features\\\\notifications\\\\data\\\\services\")",
+      "Bash(New-Item -ItemType Directory -Force -Path \"C:\\\\Users\\\\mouti\\\\AndroidStudioProjects\\\\megaboss\\\\lib\\\\features\\\\notifications\\\\domain\\\\repositories\")",
+      "Bash(New-Item -ItemType Directory -Force -Path \"C:\\\\Users\\\\mouti\\\\AndroidStudioProjects\\\\megaboss\\\\lib\\\\features\\\\notifications\\\\presentation\\\\controllers\")",
+      "Bash(New-Item -ItemType Directory -Force -Path \"C:\\\\Users\\\\mouti\\\\AndroidStudioProjects\\\\megaboss\\\\lib\\\\features\\\\notifications\\\\presentation\\\\screens\")",
+      "Bash(Write-Host \"Directories created\")",
+      "Bash(Select-String -Pattern \"flutter|mobile_scanner|go_router|permission\")",
+      "mcp__code-review-graph__semantic_search_nodes_tool"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "code-review-graph"
+  ]
+}
