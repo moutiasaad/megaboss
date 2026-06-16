@@ -45,6 +45,7 @@ class StatsRepository {
         'failed_count': s.failedCount,
         'pending_count': s.pendingCount,
         'cod_collected': s.codCollected,
+        'currency': s.codCurrency,
         'reachability_rate': s.reachabilityRate,
         'calls_made': s.callsMade,
         'daily_stats': s.dailyStats

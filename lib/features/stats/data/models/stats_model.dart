@@ -9,6 +9,7 @@ class StatsModel {
     required this.dailyStats,
     required this.topFailureReasons,
     this.callsMade = 0,
+    this.codCurrency = 'TND',
   });
 
   final int deliveredCount;
@@ -19,6 +20,7 @@ class StatsModel {
   final List<DailyStatModel> dailyStats;
   final List<FailureReasonModel> topFailureReasons;
   final int callsMade;
+  final String codCurrency; // ISO currency code returned by the API
 
   int get totalShipments => deliveredCount + failedCount + pendingCount;
 
@@ -50,6 +52,8 @@ class StatsModel {
                 .toList() ??
             [],
         callsMade: json['calls_made'] as int? ?? 0,
+        codCurrency: json['currency'] as String? ??
+            json['cod_currency'] as String? ?? 'TND',
       );
 
   static StatsModel empty() => const StatsModel(

@@ -1433,4 +1433,102 @@ class AppStrings {
         'en' => 'No parcels scanned',
         _ => 'Aucun colis scanné',
       };
+
+  // ── Statistiques screen ───────────────────────────────────────────────────
+
+  String get statsTitle => switch (locale) {
+        'ar' => 'الإحصائيات',
+        'en' => 'Statistics',
+        _ => 'Statistiques',
+      };
+
+  String get statsPeriodToday => switch (locale) {
+        'ar' => 'اليوم',
+        'en' => 'Today',
+        _ => 'Auj.',
+      };
+
+  String get statsPeriodWeek => switch (locale) {
+        'ar' => 'الأسبوع',
+        'en' => 'Week',
+        _ => 'Semaine',
+      };
+
+  String get statsPeriodMonth => switch (locale) {
+        'ar' => 'الشهر',
+        'en' => 'Month',
+        _ => 'Mois',
+      };
+
+  String get statsPeriodCustom => switch (locale) {
+        'ar' => 'مخصص',
+        'en' => 'Custom',
+        _ => 'Perso',
+      };
+
+  String get statsKpiSuccess => switch (locale) {
+        'ar' => 'توصيلات ناجحة',
+        'en' => 'DELIVERIES',
+        _ => 'LIVRAISONS RÉUSSIES',
+      };
+
+  String get statsKpiFailed => switch (locale) {
+        'ar' => 'إخفاقات',
+        'en' => 'FAILURES',
+        _ => 'ÉCHECS',
+      };
+
+  String statsKpiCod(String currency) => switch (locale) {
+        'ar' => 'COD المحصّل · $currency',
+        'en' => 'COD COLLECTED · $currency',
+        _ => 'COD COLLECTÉ · $currency',
+      };
+
+  String get statsKpiReachRate => switch (locale) {
+        'ar' => 'معدل الوصول',
+        'en' => 'REACHABILITY',
+        _ => 'TAUX JOIGNABILITÉ',
+      };
+
+  String get statsChartTitle => switch (locale) {
+        'ar' => 'توصيلات / يوم',
+        'en' => 'DELIVERIES / DAY',
+        _ => 'LIVRAISONS / JOUR',
+      };
+
+  String get statsTopFailTitle => switch (locale) {
+        'ar' => 'أبرز أسباب الإخفاق',
+        'en' => 'TOP FAILURE REASONS',
+        _ => "TOP RAISONS D'ÉCHEC",
+      };
+
+  String get statsNoFailures => switch (locale) {
+        'ar' => 'لا إخفاقات في هذه الفترة 🎉',
+        'en' => 'No failures this period 🎉',
+        _ => 'Aucun échec sur la période 🎉',
+      };
+
+  String get statsEmpty => switch (locale) {
+        'ar' => 'لا توصيلات في هذه الفترة',
+        'en' => 'No deliveries this period',
+        _ => 'Aucune livraison sur la période',
+      };
+
+  String get statsError => switch (locale) {
+        'ar' => 'تعذر تحميل الإحصائيات.',
+        'en' => 'Unable to load statistics.',
+        _ => 'Impossible de charger les statistiques.',
+      };
+
+  String get statsRetry => switch (locale) {
+        'ar' => 'إعادة المحاولة',
+        'en' => 'Retry',
+        _ => 'Réessayer',
+      };
+
+  String get statsOfflineCache => switch (locale) {
+        'ar' => 'بيانات مؤقتة · لا اتصال',
+        'en' => 'Cached data · offline',
+        _ => 'Données en cache · hors-ligne',
+      };
 }

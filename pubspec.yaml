@@ -66,6 +66,9 @@ dependencies:
   firebase_core: ^3.4.0
   firebase_messaging: ^15.1.0
 
+  # Charts (Statistics screen)
+  fl_chart: ^0.69.0
+
   # Barcode / QR scanner
   mobile_scanner: ^6.0.0
 
