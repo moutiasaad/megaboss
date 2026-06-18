@@ -60,6 +60,7 @@ class CallLogModel {
         'type': type,
         'result': result,
         'manual': manual,
+        if (shipmentId != null) 'shipment_id': shipmentId,
       };
 }
 

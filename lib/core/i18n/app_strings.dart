@@ -480,6 +480,101 @@ class AppStrings {
         _ => 'Impossible de charger le runsheet.',
       };
 
+  // ── Runsheet detail list section ──────────────────────────────────────────
+
+  String rsdFilterAll(int n) => switch (locale) {
+        'ar' => 'الكل $n',
+        'en' => 'All $n',
+        _ => 'Tous $n',
+      };
+
+  String rsdFilterPending(int n) => switch (locale) {
+        'ar' => 'المتبقية $n',
+        'en' => 'Remaining $n',
+        _ => 'Restants $n',
+      };
+
+  String rsdFilterDelivered(int n) => switch (locale) {
+        'ar' => 'مُسلَّم $n',
+        'en' => 'Delivered $n',
+        _ => 'Livrés $n',
+      };
+
+  String rsdFilterFailed(int n) => switch (locale) {
+        'ar' => 'الفشل $n',
+        'en' => 'Failed $n',
+        _ => 'Échecs $n',
+      };
+
+  String get rsdGroupTodo => switch (locale) {
+        'ar' => 'للتسليم · المسار',
+        'en' => 'TO DELIVER · ROUTE',
+        _ => 'À LIVRER · ITINÉRAIRE',
+      };
+
+  String rsdGroupSumToCollect(String amount) => switch (locale) {
+        'ar' => 'المستحق: $amount',
+        'en' => 'To collect $amount',
+        _ => 'À percevoir $amount',
+      };
+
+  String get rsdNextStop => switch (locale) {
+        'ar' => 'التوقف التالي',
+        'en' => 'Next stop',
+        _ => 'Prochain arrêt',
+      };
+
+  String get rsdGroupDone => switch (locale) {
+        'ar' => 'المنجزة',
+        'en' => 'DONE',
+        _ => 'TERMINÉS',
+      };
+
+  String get rsdShowAll => switch (locale) {
+        'ar' => 'عرض الكل',
+        'en' => 'Show all',
+        _ => 'Tout afficher',
+      };
+
+  String get rsdTrackingLabel => switch (locale) {
+        'ar' => 'رقم التتبع',
+        'en' => 'TRACKING NO.',
+        _ => 'N° SUIVI',
+      };
+
+  String get rsdDeliver => switch (locale) {
+        'ar' => 'تسليم',
+        'en' => 'Deliver',
+        _ => 'Livrer',
+      };
+
+  String rsdDeliveredAt(String time) => switch (locale) {
+        'ar' => time.isNotEmpty ? 'تم التسليم · $time' : 'تم التسليم',
+        'en' => time.isNotEmpty ? 'Delivered · $time' : 'Delivered',
+        _ => time.isNotEmpty ? 'Livré · $time' : 'Livré',
+      };
+
+  String rsdFailedAt(String reason, String time) {
+    final parts = [
+      switch (locale) { 'ar' => 'فشل', 'en' => 'Failed', _ => 'Échec' },
+      if (reason.isNotEmpty) reason,
+      if (time.isNotEmpty) time,
+    ];
+    return parts.join(' · ');
+  }
+
+  String get rsdEmptyPending => switch (locale) {
+        'ar' => 'لا توجد طرود قيد الانتظار',
+        'en' => 'No pending parcels',
+        _ => 'Aucun colis en attente',
+      };
+
+  String get rsdEmptyFiltered => switch (locale) {
+        'ar' => 'لا توجد نتائج',
+        'en' => 'No results',
+        _ => 'Aucun résultat',
+      };
+
   // Shipment statuses (used in detail + shipment rows)
   String get shipStatusDelivered => switch (locale) {
         'ar' => 'تم التسليم',
@@ -566,6 +661,24 @@ class AppStrings {
         _ => 'Non joignable',
       };
 
+  String get callResultTitle => switch (locale) {
+        'ar' => 'كيف سار الاتصال؟',
+        'en' => 'How did the call go?',
+        _ => 'Comment s\'est passé cet appel ?',
+      };
+
+  String get callResultSubtitle => switch (locale) {
+        'ar' => 'سيتم حفظ النتيجة في سجل المكالمات',
+        'en' => 'The result will be saved in the call log',
+        _ => 'Le résultat sera enregistré dans l\'historique',
+      };
+
+  String get callDuration => switch (locale) {
+        'ar' => 'مدة المكالمة',
+        'en' => 'Duration',
+        _ => 'Durée',
+      };
+
   String get colCall => switch (locale) {
         'ar' => 'اتصال',
         'en' => 'Call',
@@ -627,6 +740,12 @@ class AppStrings {
         _ => 'détecté',
       };
 
+  String get scanValidating => switch (locale) {
+        'ar' => 'جارٍ التحقق…',
+        'en' => 'Checking…',
+        _ => 'Vérification…',
+      };
+
   String get scanCodLabel => switch (locale) {
         'ar' => 'المبلغ المستحق',
         'en' => 'COD TO COLLECT',
@@ -661,6 +780,12 @@ class AppStrings {
         'ar' => 'محفوظ · في انتظار المزامنة',
         'en' => 'Saved · pending sync',
         _ => 'Enregistré · en attente de synchro',
+      };
+
+  String get scanToastScanned => switch (locale) {
+        'ar' => 'تم المسح · المسح التالي…',
+        'en' => 'Parcel scanned · next scan…',
+        _ => 'Colis scanné · scan suivant…',
       };
 
   String get scanPermTitle => switch (locale) {
@@ -751,6 +876,12 @@ class AppStrings {
         'ar' => 'تأكيد الطرد',
         'en' => 'Confirm parcel',
         _ => 'Confirmer le colis',
+      };
+
+  String get scanConfirmUnknown => switch (locale) {
+        'ar' => 'الباركود غير معروف في الكاش، سيتحقق الخادم',
+        'en' => 'Barcode not in cache — server will validate',
+        _ => 'Code non trouvé localement · validation serveur',
       };
 
   String get scanConfirmDelivery => switch (locale) {
@@ -1372,6 +1503,12 @@ class AppStrings {
         'ar' => 'تم المسح مسبقاً',
         'en' => 'Already scanned',
         _ => 'Déjà scanné',
+      };
+
+  String get qscanNotInManifest => switch (locale) {
+        'ar' => 'الطرد ليس في القائمة',
+        'en' => 'Not in manifest',
+        _ => 'Hors liste',
       };
 
   String get qscanOfflineBanner => switch (locale) {

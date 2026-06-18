@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,6 +9,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../../../core/i18n/app_strings.dart';
+import '../../../../core/network/providers.dart';
 import '../../../../core/providers/locale_provider.dart';
 import '../../../../core/theme/colors.dart';
 import '../controllers/pickup_scan_controller.dart';
@@ -42,6 +45,11 @@ class _PickupScanScreenState extends ConsumerState<PickupScanScreen>
   final _listKey = GlobalKey<AnimatedListState>();
   final _sideItems = <String>[];
   int _sideListKey = 0;
+
+  // Reject visuals — shown briefly in the side overlay
+  String? _duplicateBarcode;    // already scanned this session
+  String? _outOfManifestBarcode; // barcode not in this manifest
+  Timer? _dupTimer;
 
   @override
   void initState() {
@@ -97,6 +105,7 @@ class _PickupScanScreenState extends ConsumerState<PickupScanScreen>
     _camera.dispose();
     _lineCtrl.dispose();
     _counterCtrl.dispose();
+    _dupTimer?.cancel();
     super.dispose();
   }
 
@@ -125,17 +134,56 @@ class _PickupScanScreenState extends ConsumerState<PickupScanScreen>
   }
 
   void _onDetect(BarcodeCapture cap) {
-    final raw = cap.barcodes.isNotEmpty ? cap.barcodes.first.rawValue : null;
-    if (raw == null) return;
+    if (cap.barcodes.isEmpty) return;
+
+    // Collect all non-empty values — multiple barcodes may be visible in frame.
+    final codes = cap.barcodes
+        .map((b) => b.rawValue?.trim())
+        .where((v) => v != null && v.isNotEmpty)
+        .cast<String>()
+        .toList();
+    if (codes.isEmpty) return;
+
+    // Prefer a code that matches the manifest; fall back to first.
+    final manifest = ref.read(pickupRepositoryProvider).cached(widget.manifestId);
+    String raw = codes.first;
+    if (manifest != null && manifest.shipments.isNotEmpty) {
+      for (final c in codes) {
+        if (manifest.shipments.any((s) => s.matchesCode(c))) {
+          raw = c;
+          break;
+        }
+      }
+    }
+
     if (_throttle(raw)) return;
 
-    final s = AppStrings.of(ref.read(localeProvider).languageCode);
     final ctrl = ref.read(pickupScanProvider(widget.manifestId).notifier);
-    final added = ctrl.add(raw);
+    final result = ctrl.add(raw);
 
-    if (!added) {
+    if (result == ScanAddResult.duplicate) {
       HapticFeedback.heavyImpact();
-      _showToast(s.qscanDuplicate, isError: true);
+      _dupTimer?.cancel();
+      setState(() {
+        _duplicateBarcode = raw;
+        _outOfManifestBarcode = null;
+      });
+      _dupTimer = Timer(const Duration(seconds: 2), () {
+        if (mounted) setState(() => _duplicateBarcode = null);
+      });
+      return;
+    }
+
+    if (result == ScanAddResult.notInManifest) {
+      HapticFeedback.vibrate();
+      _dupTimer?.cancel();
+      setState(() {
+        _outOfManifestBarcode = raw;
+        _duplicateBarcode = null;
+      });
+      _dupTimer = Timer(const Duration(seconds: 2), () {
+        if (mounted) setState(() => _outOfManifestBarcode = null);
+      });
       return;
     }
 
@@ -148,7 +196,15 @@ class _PickupScanScreenState extends ConsumerState<PickupScanScreen>
         0,
         duration: const Duration(milliseconds: 200),
       );
-      if (_sideItems.length > 5) _sideItems.removeAt(5);
+      if (_sideItems.length > 5) {
+        final overflowIdx = _sideItems.length - 1;
+        _sideItems.removeAt(overflowIdx);
+        _listKey.currentState?.removeItem(
+          overflowIdx,
+          (_, __) => const SizedBox.shrink(),
+          duration: Duration.zero,
+        );
+      }
     });
   }
 
@@ -279,6 +335,7 @@ class _PickupScanScreenState extends ConsumerState<PickupScanScreen>
     ));
   }
 
+
   // ── Build ───────────────────────────────────────────────────────────────────
 
   @override
@@ -364,8 +421,52 @@ class _PickupScanScreenState extends ConsumerState<PickupScanScreen>
                 ),
 
                 // (C) Side list — most recent first
+                // Reject chip: slides in from above (duplicate=red, not-in-manifest=orange)
                 Positioned(
-                  top: 120, bottom: 130, right: 12,
+                  top: 120,
+                  right: 12,
+                  width: 132,
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 200),
+                    transitionBuilder: (child, anim) => SlideTransition(
+                      position: Tween<Offset>(
+                        begin: const Offset(0, -1),
+                        end: Offset.zero,
+                      ).animate(
+                          CurvedAnimation(parent: anim, curve: Curves.easeOut)),
+                      child: FadeTransition(opacity: anim, child: child),
+                    ),
+                    child: _outOfManifestBarcode != null
+                        ? _RejectChip(
+                            key: ValueKey('oom_$_outOfManifestBarcode'),
+                            barcode: _outOfManifestBarcode!,
+                            label: AppStrings.of(
+                                ref.read(localeProvider).languageCode)
+                                .qscanNotInManifest,
+                            color: mbWarn,
+                          )
+                        : _duplicateBarcode != null
+                            ? _RejectChip(
+                                key: ValueKey('dup_$_duplicateBarcode'),
+                                barcode: _duplicateBarcode!,
+                                label: AppStrings.of(
+                                    ref.read(localeProvider).languageCode)
+                                    .qscanDuplicate,
+                                color: mbErr,
+                              )
+                            : const SizedBox.shrink(key: Key('no-reject')),
+                  ),
+                ),
+
+                // List slides down smoothly when a reject chip appears
+                AnimatedPositioned(
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOut,
+                  top: (_duplicateBarcode != null || _outOfManifestBarcode != null)
+                      ? 166.0
+                      : 120.0,
+                  bottom: 130,
+                  right: 12,
                   width: 132,
                   child: ClipRect(
                     child: AnimatedList(
@@ -967,6 +1068,65 @@ class _OfflineChip extends StatelessWidget {
               fontWeight: FontWeight.w600,
               color: Colors.white,
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Reject chip (duplicate = red, not-in-manifest = orange) ─────────────────
+
+class _RejectChip extends StatelessWidget {
+  const _RejectChip({
+    super.key,
+    required this.barcode,
+    required this.label,
+    required this.color,
+  });
+  final String barcode;
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+      decoration: BoxDecoration(
+        color: color.withAlpha(230),
+        borderRadius: BorderRadius.circular(9),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x44000000),
+            blurRadius: 6,
+            offset: Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            style: GoogleFonts.archivo(
+              fontSize: 9.5,
+              fontWeight: FontWeight.w700,
+              color: Colors.white.withAlpha(0xCC),
+              letterSpacing: 0.3,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            barcode,
+            style: GoogleFonts.splineSansMono(
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+            ),
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
           ),
         ],
       ),

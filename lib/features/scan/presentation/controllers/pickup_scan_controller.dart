@@ -5,6 +5,8 @@ import '../../../../core/network/providers.dart';
 import '../../../../core/network/sync_operation.dart';
 import '../../data/models/scan_result_model.dart';
 
+enum ScanAddResult { added, duplicate, notInManifest }
+
 // ─── State ────────────────────────────────────────────────────────────────────
 
 class ScanBatchState {
@@ -79,13 +81,26 @@ class PickupScanController
 
   // ── Scan actions ────────────────────────────────────────────────────────────
 
-  // Returns true if added (new), false if already scanned (duplicate).
-  bool add(String barcode) {
-    if (state.scanned.contains(barcode)) return false;
-    state = state.copyWith(scanned: [barcode, ...state.scanned]);
+  // Returns the outcome of trying to add a barcode:
+  //   added          — new barcode, accepted
+  //   duplicate      — already in this session's scanned list
+  //   notInManifest  — barcode not found in the manifest's shipment list
+  //                    (only rejects when the manifest is loaded and has shipments)
+  ScanAddResult add(String barcode) {
+    final code = barcode.trim();
+    if (state.scanned.any((b) => b.trim() == code)) return ScanAddResult.duplicate;
+
+    // Validate against the manifest when available
+    final manifest = ref.read(pickupRepositoryProvider).cached(arg);
+    if (manifest != null && manifest.shipments.isNotEmpty) {
+      final inManifest = manifest.shipments.any((s) => s.matchesCode(code));
+      if (!inManifest) return ScanAddResult.notInManifest;
+    }
+
+    state = state.copyWith(scanned: [code, ...state.scanned]);
     // Offline: persist immediately so the scan survives app close / crashes.
     if (state.isOffline) _persistNow(barcode);
-    return true;
+    return ScanAddResult.added;
   }
 
   // Immediately writes barcode to Hive (fire-and-forget).
@@ -169,18 +184,32 @@ class PickupScanController
     }
 
     try {
-      final results =
+      final batch =
           await ref.read(scanRepositoryProvider).scanBatch(items);
-      // Empty results = offline (new items were also individually queued by scanBatch).
-      final offline = results.isEmpty && items.isNotEmpty;
       state = state.copyWith(
         sending: false,
-        sentOffline: offline || persisted.isNotEmpty,
+        sentOffline: batch.queuedOffline || persisted.isNotEmpty,
       );
       return true;
-    } catch (e) {
-      state = state.copyWith(sending: false);
-      rethrow;
+    } catch (_) {
+      // API failed — queue remaining items offline so no scan is lost.
+      try {
+        final queue = ref.read(offlineQueueProvider);
+        for (final item in items) {
+          final opId = _uuid.v4();
+          await queue.enqueue(SyncOperation(
+            clientOperationId: opId,
+            type: SyncOperationType.scanPickup,
+            payload: {'barcode': item.barcode},
+            clientTimestamp: DateTime.now().toUtc(),
+          ));
+        }
+        state = state.copyWith(sending: false, sentOffline: true);
+        return true;
+      } catch (e) {
+        state = state.copyWith(sending: false);
+        rethrow;
+      }
     }
   }
 }

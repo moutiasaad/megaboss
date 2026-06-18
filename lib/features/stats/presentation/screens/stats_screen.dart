@@ -202,13 +202,14 @@ class _AppBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       color: mbBlue,
-      padding: EdgeInsets.only(
-        top: MediaQuery.of(context).padding.top + 9,
-        bottom: 9,
-        left: 14,
-        right: 14,
+      width: double.infinity,
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          child: Text(title, style: MbTypography.h2(Colors.white)),
+        ),
       ),
-      child: Text(title, style: MbTypography.h2(Colors.white)),
     );
   }
 }
@@ -274,23 +275,24 @@ class _StatsBody extends StatelessWidget {
       children: [
         // (C) KPI grid
         Padding(
-          padding: const EdgeInsets.fromLTRB(14, 14, 14, 0),
+          padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
           child: _KpiGrid(stats: stats, strings: s, locale: locale),
         ),
         // (D) Bar chart
-        const SizedBox(height: MbSpacing.lg),
+        const SizedBox(height: MbSpacing.md),
         _SectionLabel(s.statsChartTitle),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14),
           child: MbCard(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 26),
-            child: stats.dailyStats.isEmpty
+            child: stats.dailyStats.isEmpty ||
+                    stats.dailyStats.every((d) => d.delivered == 0)
                 ? _ChartEmpty(label: s.statsEmpty)
                 : _BarChart(dailyStats: stats.dailyStats, locale: locale),
           ),
         ),
         // (E) Failure reasons
-        const SizedBox(height: MbSpacing.lg),
+        const SizedBox(height: MbSpacing.md),
         _SectionLabel(s.statsTopFailTitle),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -455,7 +457,7 @@ class _BarChart extends StatelessWidget {
         barRods: [
           BarChartRodData(
             toY: d.delivered.toDouble(),
-            color: i == hiIdx ? mbErr : mbBlue,
+            color: i == hiIdx ? mbWarn : mbBlue,
             width: 18,
             borderRadius: const BorderRadius.only(
               topLeft: Radius.circular(5),

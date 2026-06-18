@@ -93,13 +93,47 @@ class RunsheetRepository {
     }
   }
 
+  // All runsheets that have been individually fetched (any detail_* key).
+  List<RunsheetModel> cachedAllDetails() {
+    final results = <RunsheetModel>[];
+    for (final key in _box.keys.cast<String>()) {
+      if (!key.startsWith('detail_')) continue;
+      final raw = _box.get(key);
+      if (raw == null) continue;
+      try {
+        results.add(RunsheetModel.fromJson(jsonDecode(raw) as Map<String, dynamic>));
+      } catch (_) {}
+    }
+    return results;
+  }
+
   Future<RunsheetModel> show(int id) async {
     final runsheet = await _service.show(id);
     _box.put('detail_$id', jsonEncode(runsheet.toJson()));
     if (runsheet.isActive) {
       _box.put('active', jsonEncode(runsheet.toJson()));
     }
+    _patchListCaches(runsheet);
     return runsheet;
+  }
+
+  // Overwrites the matching list-cache entry with fresh detail data so that
+  // cached list reads show up-to-date counts after visiting a detail screen.
+  void _patchListCaches(RunsheetModel updated) {
+    final encoded = updated.toJson();
+    for (final key in _box.keys.cast<String>()) {
+      if (!key.startsWith('list')) continue;
+      final raw = _box.get(key);
+      if (raw == null) continue;
+      try {
+        final list = jsonDecode(raw) as List<dynamic>;
+        final patched = list.map((e) {
+          final item = e as Map<String, dynamic>;
+          return (item['id'] as int?) == updated.id ? encoded : item;
+        }).toList();
+        _box.put(key, jsonEncode(patched));
+      } catch (_) {}
+    }
   }
 
   // ── Write ──────────────────────────────────────────────────────────────────

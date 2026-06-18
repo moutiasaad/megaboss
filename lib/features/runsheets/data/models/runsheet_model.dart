@@ -45,10 +45,17 @@ class RunsheetModel {
         s?['total'] as int? ??
         (json['shipments'] as List?)?.length ?? 0;
     final delivered = json['delivered_count'] as int? ??
-        s?['delivered'] as int? ?? 0;
+        json['delivered'] as int? ??
+        s?['delivered'] as int? ??
+        s?['delivered_count'] as int? ?? 0;
     final failed = json['returned_count'] as int? ??
         json['failed_count'] as int? ??
-        s?['returned'] as int? ?? 0;
+        json['returned'] as int? ??
+        json['failed'] as int? ??
+        s?['returned'] as int? ??
+        s?['failed'] as int? ??
+        s?['returned_count'] as int? ??
+        s?['failed_count'] as int? ?? 0;
     final rescheduled = json['rescheduled_count'] as int? ??
         s?['rescheduled'] as int? ?? 0;
 

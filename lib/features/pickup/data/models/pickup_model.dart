@@ -88,6 +88,7 @@ class PickupShipmentModel {
   const PickupShipmentModel({
     required this.id,
     required this.trackingNumber,
+    this.barcode = '',
     required this.status,
     this.codAmount,
     this.recipientName,
@@ -98,6 +99,7 @@ class PickupShipmentModel {
 
   final int id;
   final String trackingNumber;
+  final String barcode;
   final String status; // PickupShipmentStatus.*
   final double? codAmount;
   final String? recipientName;
@@ -105,12 +107,21 @@ class PickupShipmentModel {
   final DateTime? collectedAt;  // optimistic local timestamp
   final String? refuseReason;   // optimistic local reason
 
+  bool matchesCode(String code) {
+    final c = code.trim();
+    if (c.isEmpty) return false;
+    return trackingNumber.trim() == c || barcode.trim() == c;
+  }
+
   factory PickupShipmentModel.fromJson(Map<String, dynamic> json) {
     // API nests recipient under json['recipient']['name']
     final recipient = json['recipient'] as Map<String, dynamic>?;
     return PickupShipmentModel(
       id: json['id'] as int,
-      trackingNumber: json['tracking_number'] as String? ?? '',
+      trackingNumber: json['tracking_number'] as String? ??
+          json['code'] as String? ??
+          json['barcode'] as String? ?? '',
+      barcode: json['barcode'] as String? ?? '',
       status: json['pickup_status'] as String? ??
           json['status'] as String? ??
           PickupShipmentStatus.pending,
@@ -133,6 +144,7 @@ class PickupShipmentModel {
   Map<String, dynamic> toJson() => {
         'id': id,
         'tracking_number': trackingNumber,
+        'barcode': barcode,
         'pickup_status': status,
         'cod_amount': codAmount,
         'recipient_name': recipientName,
@@ -145,7 +157,7 @@ class PickupShipmentModel {
   ShipmentModel toShipment() => ShipmentModel(
         id: id,
         trackingNumber: trackingNumber,
-        barcode: '',
+        barcode: barcode,
         status: status,
         recipientName: recipientName ?? '',
         address: '',
@@ -162,6 +174,7 @@ class PickupShipmentModel {
       PickupShipmentModel(
         id: id,
         trackingNumber: trackingNumber,
+        barcode: barcode,
         status: status ?? this.status,
         codAmount: codAmount,
         recipientName: recipientName,

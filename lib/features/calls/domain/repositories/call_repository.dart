@@ -49,6 +49,26 @@ class CallRepository {
         .toList();
   }
 
+  // All individually buffered call logs for a shipment (synced or not).
+  // Used to keep a call visible in the UI even after a successful POST sync
+  // in case the server hasn't returned it via GET yet.
+  List<CallLogModel> localForShipment(int shipmentId) {
+    return _box.values
+        .map((raw) {
+          try {
+            final map = jsonDecode(raw) as Map<String, dynamic>;
+            // List-type cache entries (history_*, ship_*) don't have raw_log_id.
+            if (map['raw_log_id'] == null) return null;
+            return CallLogModel.fromJson(map);
+          } catch (_) {
+            return null;
+          }
+        })
+        .whereType<CallLogModel>()
+        .where((c) => c.shipmentId == shipmentId)
+        .toList();
+  }
+
   // ── Sync ───────────────────────────────────────────────────────────────────
 
   Future<void> syncPending() async {

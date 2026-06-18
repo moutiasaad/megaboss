@@ -78,7 +78,7 @@ class RunsheetsPageNotifier extends AsyncNotifier<RunsheetsPageData> {
     final repo = ref.watch(runsheetRepositoryProvider);
     final cached = repo.cachedListForPeriod(_period.apiValue);
     if (cached.isNotEmpty) {
-      _all = cached;
+      _all = _mergeWithDetailCache(cached);
       Future.microtask(() => _silentRefresh());
       return RunsheetsPageData(
         items: _sorted(_all),
@@ -186,7 +186,7 @@ class RunsheetsPageNotifier extends AsyncNotifier<RunsheetsPageData> {
   Future<RunsheetsPageData> _doFetch() async {
     _page = 1;
     final items = await _fetchPage();
-    _all = items;
+    _all = _mergeWithDetailCache(items);
     _hasMore = items.length >= 20;
     return RunsheetsPageData(
       items: _sorted(_all),
@@ -198,6 +198,23 @@ class RunsheetsPageNotifier extends AsyncNotifier<RunsheetsPageData> {
     );
   }
 
+  // Overlay accurate counts from any cached detail/active entries onto list items.
+  // The list API often omits delivered/failed counts; detail and active always have them.
+  List<RunsheetModel> _mergeWithDetailCache(List<RunsheetModel> items) {
+    final repo = ref.read(runsheetRepositoryProvider);
+    final active = repo.cachedActive;
+    return items.map((rs) {
+      final detail = repo.cachedDetail(rs.id) ??
+          (active?.id == rs.id ? active : null);
+      if (detail == null) return rs;
+      return rs.copyWith(
+        deliveredCount: detail.deliveredCount,
+        failedCount: detail.failedCount,
+        pendingCount: detail.pendingCount,
+      );
+    }).toList();
+  }
+
   Future<List<RunsheetModel>> _fetchPage() {
     return ref.read(runsheetRepositoryProvider).list(
           period: _period != RunsheetPeriod.custom ? _period.apiValue : null,
@@ -205,6 +222,14 @@ class RunsheetsPageNotifier extends AsyncNotifier<RunsheetsPageData> {
           to: _period == RunsheetPeriod.custom ? _customTo : null,
           page: _page,
         );
+  }
+
+  // Replace a single item in the in-memory list (e.g. after loading its detail).
+  void patchItem(RunsheetModel rs) {
+    final current = state.valueOrNull;
+    if (current == null) return;
+    _all = _all.map((r) => r.id == rs.id ? rs : r).toList();
+    state = AsyncData(current.copyWith(items: _sorted(_all)));
   }
 
   List<RunsheetModel> _sorted(List<RunsheetModel> items) {
@@ -333,11 +358,15 @@ class RunsheetDetailController
         try {
           final fresh = await repo.show(id);
           state = AsyncData(fresh);
+          // Propagate fresh counts back to the list so the card shows correct data.
+          ref.read(runsheetsPageProvider.notifier).patchItem(fresh);
         } catch (_) {}
       });
       return cached;
     }
-    return repo.show(id);
+    final fresh = await repo.show(id);
+    ref.read(runsheetsPageProvider.notifier).patchItem(fresh);
+    return fresh;
   }
 
   Future<void> refresh() async {

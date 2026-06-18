@@ -23,6 +23,8 @@ class ShipmentModel {
     this.nbArticles = 1,
     this.timeline = const [],
     this.senderName,
+    this.etaMin,
+    this.distanceKm,
   });
 
   final int id;
@@ -45,6 +47,8 @@ class ShipmentModel {
   final int nbArticles;
   final List<TimelineEventModel> timeline;
   final String? senderName;
+  final int? etaMin;
+  final double? distanceKm;
 
   bool get hasCod => codAmount != null && codAmount! > 0;
 
@@ -91,6 +95,8 @@ class ShipmentModel {
               .toList() ??
           [],
       senderName: owner?['name'] as String? ?? json['sender_name'] as String?,
+      etaMin: json['eta_min'] as int? ?? json['eta_minutes'] as int?,
+      distanceKm: double.tryParse('${json['distance_km'] ?? json['distance'] ?? ''}'),
     );
   }
 
@@ -115,6 +121,8 @@ class ShipmentModel {
         'nb_articles': nbArticles,
         'timeline': timeline.map((e) => e.toJson()).toList(),
         'sender_name': senderName,
+        'eta_min': etaMin,
+        'distance_km': distanceKm,
       };
 
   ShipmentModel copyWith({String? status}) => ShipmentModel(
@@ -138,6 +146,8 @@ class ShipmentModel {
         nbArticles: nbArticles,
         timeline: timeline,
         senderName: senderName,
+        etaMin: etaMin,
+        distanceKm: distanceKm,
       );
 }
 

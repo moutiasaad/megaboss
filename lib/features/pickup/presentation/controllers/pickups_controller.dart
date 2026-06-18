@@ -77,7 +77,7 @@ class PickupsController extends AsyncNotifier<PickupsState> {
     final cached = repo.cachedActive;
     if (cached.isNotEmpty) {
       Future.microtask(_backgroundRefresh);
-      return PickupsState(filter: '', allItems: _sorted(cached), offline: true);
+      return PickupsState(filter: '', allItems: _sorted(cached), offline: false);
     }
     final items = await repo.getActive();
     return PickupsState(filter: '', allItems: _sorted(items));
@@ -93,7 +93,12 @@ class PickupsController extends AsyncNotifier<PickupsState> {
           offline: false,
         ));
       }
-    } catch (_) {}
+    } catch (_) {
+      final current = state.valueOrNull;
+      if (current != null) {
+        state = AsyncData(current.copyWith(offline: true));
+      }
+    }
   }
 
   Future<void> refresh() async {

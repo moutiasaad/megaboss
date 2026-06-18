@@ -12,6 +12,7 @@ import '../../../../core/i18n/app_strings.dart';
 import '../../../../core/network/providers.dart';
 import '../../../../core/providers/locale_provider.dart';
 import '../../../../core/theme/colors.dart';
+import '../../../runsheets/data/models/runsheet_model.dart';
 import '../../../shipments/data/models/shipment_model.dart';
 
 // ── Permission state ──────────────────────────────────────────────────────────
@@ -42,6 +43,7 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
   _PermState _permState = _PermState.checking;
   ShipmentModel? _detected;
   bool _sheetOpen = false;
+  bool _isValidating = false; // true while API barcode lookup is in-flight
   DateTime? _lastDetect;
   bool _torchOn = false;
   bool _reduceMotion = false;
@@ -53,8 +55,9 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
   StreamSubscription<List<ConnectivityResult>>? _connSub;
 
   // Fail-mode state
-  bool _blockResume = false; // prevents _resumeScan during fail sheet
-  String? _failTracking;    // non-null when fail reason sheet is open
+  bool _blockResume = false;   // prevents _resumeScan during fail sheet
+  bool _isSubmitting = false;  // prevents _resumeScan while API call + pop is in-flight
+  String? _failTracking;       // non-null when fail reason sheet is open
 
   @override
   void initState() {
@@ -62,7 +65,9 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
     WidgetsBinding.instance.addObserver(this);
 
     _camera = MobileScannerController(
-      detectionSpeed: DetectionSpeed.noDuplicates,
+      // normal + global _throttle() mirrors pickup-scan: allows retry of the same
+      // barcode after a rejection, which noDuplicates would block.
+      detectionSpeed: DetectionSpeed.normal,
       facing: CameraFacing.back,
     );
 
@@ -146,10 +151,6 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
     if (status.isGranted) {
       setState(() => _permState = _PermState.granted);
       if (!_reduceMotion) _lineCtrl.repeat(reverse: true);
-      if (widget.shipmentId != null) {
-        WidgetsBinding.instance
-            .addPostFrameCallback((_) => _lookupAndOpenById());
-      }
     } else {
       setState(() => _permState = _PermState.denied);
     }
@@ -168,77 +169,142 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
   }
 
   void _onDetect(BarcodeCapture cap) {
-    if (_sheetOpen || _detected != null) return;
-    final raw =
-        cap.barcodes.isNotEmpty ? cap.barcodes.first.rawValue : null;
-    if (raw == null) return;
+    if (_sheetOpen || _detected != null || _isValidating) return;
+    if (cap.barcodes.isEmpty) return;
     if (_throttle()) return;
 
-    final shipment = _lookupBarcode(raw);
+    // Collect all non-empty values from the frame (multiple barcodes may be visible).
+    final codes = cap.barcodes
+        .map((b) => b.rawValue?.trim())
+        .where((v) => v != null && v.isNotEmpty)
+        .cast<String>()
+        .toList();
+    if (codes.isEmpty) return;
+
+    // Pick the best candidate: real cache hit > stub (runsheet free-scan) > first code.
+    String best = codes.first;
+    String? stubCandidate;
+    for (final c in codes) {
+      final s = _lookupBarcode(c);
+      if (s != null && s.id != 0) { best = c; break; }
+      if (s != null) stubCandidate ??= c;
+    }
+    if (best == codes.first && stubCandidate != null) best = stubCandidate;
+
+    unawaited(_validateAndOpenSheet(best));
+  }
+
+  // Validates barcode then opens the confirmation sheet.
+  Future<void> _validateAndOpenSheet(String barcode) async {
+    HapticFeedback.mediumImpact();
+    _lineCtrl.stop();
+    setState(() => _isValidating = true);
+    _pillCtrl.forward(from: 0);
+
+    final ShipmentModel? shipment = _lookupBarcode(barcode);
+
+    if (!mounted) return;
+
     if (shipment == null) {
+      setState(() => _isValidating = false);
+      _pillCtrl.reverse();
+      if (!_reduceMotion) _lineCtrl.repeat(reverse: true);
+      _lastDetect = null; // reset throttle so user can retry immediately
+      _camera.start();
       _errorFeedback();
       return;
     }
 
-    HapticFeedback.mediumImpact();
-    _lineCtrl.stop();
-    setState(() => _detected = shipment);
-    _pillCtrl.forward(from: 0);
-
-    // Brief pause before sheet so the pill is visible
-    Future.delayed(const Duration(milliseconds: 250), () {
-      if (mounted && _detected != null && !_sheetOpen) {
-        unawaited(_openSheet(shipment));
-      }
+    setState(() {
+      _isValidating = false;
+      _detected = shipment;
     });
+
+    await Future.delayed(const Duration(milliseconds: 120));
+    if (mounted && _detected != null && !_sheetOpen) {
+      unawaited(_openSheet(shipment));
+    }
   }
 
   ShipmentModel? _lookupBarcode(String code) {
-    final repo = ref.read(runsheetRepositoryProvider);
+    final c = code.trim();
 
-    // 1. Specific runsheet from args
-    if (widget.runsheetId != null) {
-      final rs = repo.cachedDetail(widget.runsheetId!);
-      if (rs != null) {
-        final m = rs.shipments
-            .where((s) => s.barcode == code || s.trackingNumber == code)
-            .firstOrNull;
-        if (m != null) return m;
+    // ── Case A: specific shipment known (opened from runsheet card or shipment detail)
+    if (widget.shipmentId != null) {
+      final rsRepo = ref.read(runsheetRepositoryProvider);
+      final runsheets = <RunsheetModel>[];
+      if (widget.runsheetId != null) {
+        final d = rsRepo.cachedDetail(widget.runsheetId!);
+        if (d != null) runsheets.add(d);
       }
+      final active = rsRepo.cachedActive;
+      if (active != null && !runsheets.any((r) => r.id == active.id)) {
+        runsheets.add(active);
+      }
+      for (final rs in rsRepo.cachedAllDetails()) {
+        if (!runsheets.any((r) => r.id == rs.id)) runsheets.add(rs);
+      }
+
+      ShipmentModel? found;
+      for (final rs in runsheets) {
+        final s = rs.shipments.where((s) => s.id == widget.shipmentId).firstOrNull;
+        if (s != null) { found = s; break; }
+      }
+      found ??= ref.read(shipmentRepositoryProvider).cached(widget.shipmentId!);
+
+      if (found != null) {
+        // Validate exactly like pickup scan's matchesCode: accept if barcode or
+        // tracking number matches.  Mismatch → null → caller shows "Colis hors liste".
+        final brc = found.barcode.trim();
+        final trk = found.trackingNumber.trim();
+        if (trk == c || brc == c) return found;
+        return null;
+      }
+
+      // Shipment not in any cache (like pickup when manifest isn't loaded) — accept any.
+      return ShipmentModel(
+        id: widget.shipmentId!,
+        trackingNumber: c,
+        barcode: c,
+        status: '',
+        recipientName: '',
+        address: '',
+        city: '',
+      );
     }
 
-    // 2. Active runsheet
-    final active = repo.cachedActive;
-    if (active != null) {
-      final m = active.shipments
-          .where((s) => s.barcode == code || s.trackingNumber == code)
-          .firstOrNull;
-      if (m != null) return m;
+    // ── Case B: free scan from runsheet (no specific shipment pre-selected)
+    if (widget.runsheetId != null) {
+      final rsRepo = ref.read(runsheetRepositoryProvider);
+      final seen = <int>{};
+      final candidates = <RunsheetModel>[];
+      void tryAdd(RunsheetModel? rs) {
+        if (rs != null && seen.add(rs.id)) candidates.add(rs);
+      }
+      tryAdd(rsRepo.cachedDetail(widget.runsheetId!));
+      tryAdd(rsRepo.cachedActive);
+
+      for (final rs in candidates) {
+        final s = rs.shipments
+            .where((s) => s.barcode.trim() == c || s.trackingNumber.trim() == c)
+            .firstOrNull;
+        if (s != null) return s;
+      }
+
+      if (candidates.any((r) => r.shipments.isNotEmpty)) return null;
+
+      return ShipmentModel(
+        id: 0,
+        trackingNumber: c,
+        barcode: c,
+        status: '',
+        recipientName: c,
+        address: '',
+        city: '',
+      );
     }
 
     return null;
-  }
-
-  void _lookupAndOpenById() {
-    final id = widget.shipmentId!;
-    final repo = ref.read(runsheetRepositoryProvider);
-    ShipmentModel? found;
-
-    final active = repo.cachedActive;
-    if (active != null) {
-      found = active.shipments.where((s) => s.id == id).firstOrNull;
-    }
-    if (found == null && widget.runsheetId != null) {
-      final rs = repo.cachedDetail(widget.runsheetId!);
-      found = rs?.shipments.where((s) => s.id == id).firstOrNull;
-    }
-
-    if (found != null && mounted) {
-      _lineCtrl.stop();
-      setState(() => _detected = found);
-      _pillCtrl.forward(from: 0);
-      unawaited(_openSheet(found));
-    }
   }
 
   void _errorFeedback() {
@@ -300,7 +366,7 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
   }
 
   void _resumeScan() {
-    if (!mounted || _blockResume) return;
+    if (!mounted || _blockResume || _isSubmitting) return;
     setState(() {
       _sheetOpen = false;
       _detected = null;
@@ -355,6 +421,7 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
     ShipmentModel shipment, {
     double? codAmount,
   }) async {
+    _isSubmitting = true;
     final locale = ref.read(localeProvider).languageCode;
     final s = AppStrings.of(locale);
     final scanRepo = ref.read(scanRepositoryProvider);
@@ -364,17 +431,17 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
           shipment.barcode.isNotEmpty ? shipment.barcode : shipment.trackingNumber,
       status: ShipmentStatus.delivered,
       codCollected: codAmount != null && codAmount > 0,
-      shipmentId: shipment.id,
+      shipmentId: shipment.id != 0 ? shipment.id : null,
     );
 
     if (!mounted) return;
-    _showToast(
-      result != null ? s.scanToastDelivered : s.scanToastQueued,
-      result != null ? mbOk : mbWarn,
-    );
+    if (result == null) _showToast(s.scanToastQueued, mbWarn);
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (mounted && Navigator.of(context).canPop()) Navigator.of(context).pop();
   }
 
   Future<void> _queueDeliveryOffline(ShipmentModel shipment) async {
+    _isSubmitting = true;
     final locale = ref.read(localeProvider).languageCode;
     final s = AppStrings.of(locale);
     final scanRepo = ref.read(scanRepositoryProvider);
@@ -385,22 +452,23 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
           shipment.barcode.isNotEmpty ? shipment.barcode : shipment.trackingNumber,
       status: ShipmentStatus.delivered,
       codCollected: shipment.hasCod,
-      shipmentId: shipment.id,
+      shipmentId: shipment.id != 0 ? shipment.id : null,
     );
 
     if (!mounted) return;
 
-    // Show orange "Enregistré" pill in camera area, then auto-resume
+    // Show orange "Enregistré" pill in camera area briefly, then pop
     setState(() {
       _sheetOpen = false;
       _offlineQueued = true;
     });
     _pillCtrl.forward(from: 0);
 
-    await Future.delayed(const Duration(milliseconds: 2500));
+    await Future.delayed(const Duration(milliseconds: 1800));
     if (mounted) {
       _showToast(s.scanToastQueued, mbWarn);
-      _resumeScan();
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (mounted && Navigator.of(context).canPop()) Navigator.of(context).pop();
     }
   }
 
@@ -430,6 +498,7 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
       return;
     }
 
+    _isSubmitting = true;
     final scanRepo = ref.read(scanRepositoryProvider);
     final apiResult = await scanRepo.scanDelivery(
       barcode:
@@ -437,15 +506,13 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
       status: ShipmentStatus.failed,
       returnType: result.reason,
       comment: result.comment,
-      shipmentId: shipment.id,
+      shipmentId: shipment.id != 0 ? shipment.id : null,
     );
 
     if (!mounted) return;
-    _showToast(
-      apiResult != null ? s.scanToastDelivered : s.scanToastQueued,
-      apiResult != null ? mbOk : mbWarn,
-    );
-    _resumeScan();
+    if (apiResult == null) _showToast(s.scanToastQueued, mbWarn);
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (mounted && Navigator.of(context).canPop()) Navigator.of(context).pop();
   }
 
   void _showToast(String message, Color color) {
@@ -535,13 +602,14 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
           ),
         ),
 
-        // (C)(D) Scan frame + pill (green detected OR orange queued)
+        // (C)(D) Scan frame + pill (validating blue / green detected / orange queued)
         Center(
           child: _ScanFrame(
-            scanlineActive: !isConfirming && !_offlineQueued,
+            scanlineActive: !isConfirming && !_offlineQueued && !_isValidating,
             lineAnim: _lineAnim,
             detected: _offlineQueued ? null : _detected,
             offlineQueued: _offlineQueued,
+            isValidating: _isValidating,
             pillScale: _pillScale,
             pillFade: _pillFade,
             reduceMotion: _reduceMotion,
@@ -738,6 +806,7 @@ class _ScanFrame extends StatelessWidget {
     required this.lineAnim,
     required this.detected,
     required this.offlineQueued,
+    required this.isValidating,
     required this.pillScale,
     required this.pillFade,
     required this.reduceMotion,
@@ -748,6 +817,7 @@ class _ScanFrame extends StatelessWidget {
   final Animation<double> lineAnim;
   final ShipmentModel? detected;
   final bool offlineQueued;
+  final bool isValidating;
   final Animation<double> pillScale;
   final Animation<double> pillFade;
   final bool reduceMotion;
@@ -764,9 +834,9 @@ class _ScanFrame extends StatelessWidget {
         fit: StackFit.expand,
         clipBehavior: Clip.none,
         children: [
-          // (C) 4 L-shaped corners (dimmed when pill showing)
+          // (C) 4 L-shaped corners (dimmed when a pill is showing)
           Opacity(
-            opacity: (detected != null || offlineQueued) ? 0.4 : 1.0,
+            opacity: (detected != null || offlineQueued || isValidating) ? 0.4 : 1.0,
             child: CustomPaint(painter: _FramePainter()),
           ),
 
@@ -797,6 +867,21 @@ class _ScanFrame extends StatelessWidget {
                   ),
                 );
               },
+            ),
+
+          // Blue validating pill (spinner while API call is in-flight)
+          if (isValidating)
+            Positioned.fill(
+              child: Align(
+                alignment: Alignment.center,
+                child: FadeTransition(
+                  opacity: pillFade,
+                  child: ScaleTransition(
+                    scale: pillScale,
+                    child: _ValidatingPill(strings: strings),
+                  ),
+                ),
+              ),
             ),
 
           // Green detected pill
@@ -956,6 +1041,53 @@ class _DetectedPill extends StatelessWidget {
   }
 }
 
+// ── Validating pill (blue spinner) ───────────────────────────────────────────
+
+class _ValidatingPill extends StatelessWidget {
+  const _ValidatingPill({required this.strings});
+  final AppStrings strings;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      decoration: BoxDecoration(
+        color: mbBlue,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: mbBlue.withAlpha(0x66),
+            blurRadius: 14,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            strings.scanValidating,
+            style: GoogleFonts.archivo(
+              fontSize: 12.5,
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 // ── Orange queued pill ────────────────────────────────────────────────────────
 
 class _QueuedPill extends StatelessWidget {
@@ -1068,54 +1200,55 @@ class _ConfirmationSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.paddingOf(context).bottom;
+    final s = strings;
+    final known = shipment.id != 0;
+
+    // Build address line without trailing separators
+    final addressParts = [
+      if (shipment.address.isNotEmpty) shipment.address,
+      if (shipment.city.isNotEmpty) shipment.city,
+      if ((shipment.governorate ?? '').isNotEmpty) shipment.governorate!,
+    ];
+    final addressLine = addressParts.join(' · ');
 
     return Container(
       decoration: const BoxDecoration(
         color: mbSurface,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
-        boxShadow: [
-          BoxShadow(
-            color: Color(0x28000000),
-            blurRadius: 24,
-            offset: Offset(0, -4),
-          ),
-        ],
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        boxShadow: [BoxShadow(color: Color(0x22000000), blurRadius: 32, offset: Offset(0, -6))],
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const SizedBox(height: 8),
-          // Grab handle
-          Container(
-            width: 38,
-            height: 4,
-            decoration: BoxDecoration(
-              color: mbLine,
-              borderRadius: BorderRadius.circular(3),
+          // ── Grab handle ──────────────────────────────────────────────────────
+          const SizedBox(height: 10),
+          Center(
+            child: Container(
+              width: 36, height: 4,
+              decoration: BoxDecoration(color: mbLine, borderRadius: BorderRadius.circular(2)),
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 16),
+
           Padding(
-            padding: EdgeInsets.fromLTRB(16, 0, 16, 18 + bottom),
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 12 + bottom),
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                // (E) Header: thumbnail + recipient + address
+
+                // ── Header row: icon + name/tracking + scan badge ─────────────
                 Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
                     Container(
-                      width: 52,
-                      height: 52,
+                      width: 48, height: 48,
                       decoration: BoxDecoration(
-                        color: mbSurface3,
-                        borderRadius: BorderRadius.circular(10),
+                        color: mbOkBg,
+                        borderRadius: BorderRadius.circular(13),
                       ),
-                      child: const Icon(
-                        Icons.inventory_2_outlined,
-                        color: mbInk3,
-                        size: 26,
-                      ),
+                      child: const Icon(Icons.inventory_2_rounded, color: mbOk, size: 24),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -1123,21 +1256,57 @@ class _ConfirmationSheet extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Text(
-                            shipment.recipientName,
-                            style: GoogleFonts.archivo(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w700,
-                              color: mbInk,
+                          if (known)
+                            Text(
+                              shipment.recipientName,
+                              style: GoogleFonts.archivo(
+                                fontSize: 16, fontWeight: FontWeight.w700, color: mbInk,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            )
+                          else
+                            Text(
+                              s.scanConfirmUnknown,
+                              style: GoogleFonts.hankenGrotesk(fontSize: 13, color: mbInk2),
+                            ),
+                          const SizedBox(height: 4),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: mbSurface3,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              shipment.trackingNumber,
+                              style: GoogleFonts.splineSansMono(
+                                fontSize: 10.5, fontWeight: FontWeight.w600, color: mbInk2,
+                              ),
                             ),
                           ),
-                          const SizedBox(height: 2),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    // Scan-OK badge
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: mbOkBg,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 6, height: 6,
+                            decoration: const BoxDecoration(color: mbOk, shape: BoxShape.circle),
+                          ),
+                          const SizedBox(width: 5),
                           Text(
-                            '${shipment.address} · ${shipment.city}',
-                            style: GoogleFonts.hankenGrotesk(
-                              fontSize: 11.5,
-                              color: mbInk2,
-                              height: 1.35,
+                            'Scan OK',
+                            style: GoogleFonts.archivo(
+                              fontSize: 11, fontWeight: FontWeight.w700, color: mbOk,
                             ),
                           ),
                         ],
@@ -1146,34 +1315,91 @@ class _ConfirmationSheet extends StatelessWidget {
                   ],
                 ),
 
-                // (F) COD encart
-                if (shipment.hasCod) ...[
-                  const SizedBox(height: 13),
+                // ── Address + phone card ──────────────────────────────────────
+                if (known && (addressLine.isNotEmpty || shipment.recipientPhone != null)) ...[
+                  const SizedBox(height: 12),
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 9),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: mbSurface2,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (addressLine.isNotEmpty)
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Padding(
+                                padding: EdgeInsets.only(top: 1),
+                                child: Icon(Icons.location_on_outlined, size: 14, color: mbInk3),
+                              ),
+                              const SizedBox(width: 7),
+                              Expanded(
+                                child: Text(
+                                  addressLine,
+                                  style: GoogleFonts.hankenGrotesk(
+                                    fontSize: 13, color: mbInk2, height: 1.45,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        if (addressLine.isNotEmpty && shipment.recipientPhone != null)
+                          const SizedBox(height: 7),
+                        if (shipment.recipientPhone != null)
+                          Row(
+                            children: [
+                              const Icon(Icons.phone_outlined, size: 14, color: mbInk3),
+                              const SizedBox(width: 7),
+                              Text(
+                                shipment.recipientPhone!,
+                                style: GoogleFonts.splineSansMono(
+                                  fontSize: 12.5, fontWeight: FontWeight.w500, color: mbInk2,
+                                ),
+                              ),
+                            ],
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+
+                // ── COD card ──────────────────────────────────────────────────
+                if (shipment.hasCod) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                     decoration: BoxDecoration(
                       color: mbPendBg,
-                      borderRadius: BorderRadius.circular(10),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Color(0x33004E95), width: 1),
                     ),
                     child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          strings.scanCodLabel,
-                          style: GoogleFonts.archivo(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 0.33,
-                            color: mbBlue,
+                        Container(
+                          padding: const EdgeInsets.all(7),
+                          decoration: BoxDecoration(
+                            color: Color(0x22004E95),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Icon(Icons.payments_outlined, size: 16, color: mbBlue),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            s.scanCodLabel,
+                            style: GoogleFonts.archivo(
+                              fontSize: 10.5, fontWeight: FontWeight.w700,
+                              letterSpacing: 0.4, color: mbBlue,
+                            ),
                           ),
                         ),
                         Text(
                           '${shipment.codAmount!.toStringAsFixed(0)} TND',
                           style: GoogleFonts.archivo(
-                            fontSize: 19,
-                            fontWeight: FontWeight.w800,
-                            color: mbBlue,
+                            fontSize: 22, fontWeight: FontWeight.w800, color: mbBlue,
                           ),
                         ),
                       ],
@@ -1181,12 +1407,11 @@ class _ConfirmationSheet extends StatelessWidget {
                   ),
                 ],
 
-                // Offline warning box
+                // ── Offline warning ───────────────────────────────────────────
                 if (isOffline) ...[
-                  const SizedBox(height: 13),
+                  const SizedBox(height: 10),
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 10),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                     decoration: BoxDecoration(
                       color: mbWarnBg,
                       borderRadius: BorderRadius.circular(10),
@@ -1194,15 +1419,13 @@ class _ConfirmationSheet extends StatelessWidget {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Icon(Icons.sync, color: mbWarn, size: 16),
+                        const Icon(Icons.sync_rounded, color: mbWarn, size: 16),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            strings.scanOfflineWarning,
+                            s.scanOfflineWarning,
                             style: GoogleFonts.hankenGrotesk(
-                              fontSize: 12,
-                              color: mbWarn,
-                              height: 1.4,
+                              fontSize: 12, color: mbWarn, height: 1.4,
                             ),
                           ),
                         ),
@@ -1211,39 +1434,70 @@ class _ConfirmationSheet extends StatelessWidget {
                   ),
                 ],
 
-                const SizedBox(height: 13),
+                const SizedBox(height: 16),
 
-                // (G) 3 action buttons
+                // ── Primary: Livré ────────────────────────────────────────────
+                SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: FilledButton.icon(
+                    onPressed: onDeliver,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: mbOk,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
+                    icon: const Icon(Icons.check_rounded, size: 18),
+                    label: Text(
+                      s.scanDelivered,
+                      style: GoogleFonts.archivo(
+                        fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 9),
+
+                // ── Secondary: Échec + Retour ─────────────────────────────────
                 Row(
                   children: [
                     Expanded(
-                      child: _ActionBtn(
-                        icon: Icons.check,
-                        label: strings.scanDelivered,
-                        bgColor: mbOk,
-                        fgColor: Colors.white,
-                        onTap: onDeliver,
+                      flex: 3,
+                      child: SizedBox(
+                        height: 46,
+                        child: OutlinedButton.icon(
+                          onPressed: onFail,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: mbErr,
+                            side: const BorderSide(color: mbErr, width: 1.5),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          icon: const Icon(Icons.close_rounded, size: 16),
+                          label: Text(
+                            s.scanFailed,
+                            style: GoogleFonts.archivo(fontSize: 13.5, fontWeight: FontWeight.w700),
+                          ),
+                        ),
                       ),
                     ),
                     const SizedBox(width: 9),
                     Expanded(
-                      child: _ActionBtn(
-                        icon: Icons.close,
-                        label: strings.scanFailed,
-                        bgColor: mbRed,
-                        fgColor: Colors.white,
-                        onTap: onFail,
-                      ),
-                    ),
-                    const SizedBox(width: 9),
-                    Expanded(
-                      child: _ActionBtn(
-                        icon: Icons.undo,
-                        label: strings.scanBack,
-                        bgColor: mbSurface,
-                        fgColor: mbInk,
-                        borderColor: mbLine,
-                        onTap: onBack,
+                      flex: 2,
+                      child: SizedBox(
+                        height: 46,
+                        child: TextButton.icon(
+                          onPressed: onBack,
+                          style: TextButton.styleFrom(
+                            foregroundColor: mbInk2,
+                            backgroundColor: mbSurface3,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          icon: const Icon(Icons.arrow_back_rounded, size: 16),
+                          label: Text(
+                            s.scanBack,
+                            style: GoogleFonts.archivo(fontSize: 13.5, fontWeight: FontWeight.w700),
+                          ),
+                        ),
                       ),
                     ),
                   ],
@@ -1252,69 +1506,6 @@ class _ConfirmationSheet extends StatelessWidget {
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-// ── Action button (column icon + label) ───────────────────────────────────────
-
-class _ActionBtn extends StatelessWidget {
-  const _ActionBtn({
-    required this.icon,
-    required this.label,
-    required this.bgColor,
-    required this.fgColor,
-    this.borderColor,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String label;
-  final Color bgColor;
-  final Color fgColor;
-  final Color? borderColor;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final shape = RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(11),
-      side: borderColor != null
-          ? BorderSide(color: borderColor!, width: 1.5)
-          : BorderSide.none,
-    );
-
-    return Material(
-      color: bgColor,
-      shape: shape,
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(minHeight: 60),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 13),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, color: fgColor, size: 20),
-                const SizedBox(height: 5),
-                Text(
-                  label,
-                  style: GoogleFonts.archivo(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w700,
-                    color: fgColor,
-                  ),
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
-        ),
       ),
     );
   }

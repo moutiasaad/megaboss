@@ -56,6 +56,14 @@ final pendingOpsCountProvider = StreamProvider<int>((ref) {
   return ref.watch(offlineQueueProvider).pendingCountStream;
 });
 
+// True when the device has no network (drives offline banners across detail screens).
+final isOfflineProvider = StreamProvider<bool>((ref) {
+  final conn = ref.watch(connectivityProvider);
+  return conn.onConnectivityChanged.map(
+    (results) => !results.any((r) => r != ConnectivityResult.none),
+  );
+});
+
 // ── FCM ───────────────────────────────────────────────────────────────────────
 
 final fcmServiceProvider = Provider<FcmService>(

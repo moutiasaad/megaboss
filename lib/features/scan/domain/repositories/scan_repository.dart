@@ -4,6 +4,7 @@ import '../../data/models/scan_result_model.dart';
 import '../../data/services/scan_service.dart';
 import '../../../../core/network/offline_queue.dart';
 import '../../../../core/network/sync_operation.dart';
+import '../../../shipments/data/models/shipment_model.dart';
 import '../../../shipments/domain/repositories/shipment_repository.dart';
 
 // Scan repository — the critical offline-first layer for terrain actions.
@@ -103,11 +104,17 @@ class ScanRepository {
   }
 
   // ── Batch scan (Pickup Rapide) ─────────────────────────────────────────────
+  //
+  // Returns (results, queuedOffline):
+  //   queuedOffline=false → online path, results is whatever the API returned.
+  //   queuedOffline=true  → offline path, every item was enqueued to Hive.
 
-  Future<List<ScanResultModel>> scanBatch(List<BatchScanItem> items) async {
+  Future<({List<ScanResultModel> results, bool queuedOffline})> scanBatch(
+      List<BatchScanItem> items) async {
     final online = await _isOnline();
     if (online) {
-      return _scanService.scanBatch(items);
+      final List<ScanResultModel> results = await _scanService.scanBatch(items);
+      return (results: results, queuedOffline: false);
     } else {
       for (final item in items) {
         await _queue.enqueue(SyncOperation(
@@ -119,7 +126,25 @@ class ScanRepository {
           clientTimestamp: DateTime.now().toUtc(),
         ));
       }
-      return [];
+      return (results: <ScanResultModel>[], queuedOffline: true);
+    }
+  }
+
+  // ── Barcode validation (Phase 1 — online only, no local update) ───────────
+
+  // Sends barcode to the server with cod_collected=null to get shipment data
+  // without committing any delivery. Returns null on any error or if offline.
+  Future<ScanResultModel?> lookupByBarcode(String barcode) async {
+    final opId = _uuid.v4();
+    try {
+      return await _scanService.scanDelivery(
+        barcode: barcode,
+        status: ShipmentStatus.delivered,
+        clientOperationId: opId,
+        codCollected: null,
+      );
+    } catch (_) {
+      return null;
     }
   }
 

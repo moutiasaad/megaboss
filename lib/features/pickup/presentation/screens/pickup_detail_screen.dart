@@ -31,6 +31,7 @@ class PickupDetailScreen extends ConsumerWidget {
     final s = AppStrings.of(locale.languageCode);
     final detailAsync = ref.watch(pickupDetailProvider(id));
     final pendingOps = ref.watch(pendingOpsCountProvider).valueOrNull ?? 0;
+    final isOffline = ref.watch(isOfflineProvider).valueOrNull ?? false;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final pickup = detailAsync.valueOrNull;
 
@@ -54,8 +55,8 @@ class PickupDetailScreen extends ConsumerWidget {
             data: (p) => _ManifestHeader(pickup: p, s: s),
           ),
 
-          // Offline banner
-          if (pendingOps > 0)
+          // Offline banner — only when actually offline with unsynced ops
+          if (isOffline && pendingOps > 0)
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
               child: MbOfflineBanner(strings: s, pendingCount: pendingOps),

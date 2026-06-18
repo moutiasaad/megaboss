@@ -29,6 +29,15 @@ class RunsheetsScreen extends ConsumerStatefulWidget {
 
 class _RunsheetsScreenState extends ConsumerState<RunsheetsScreen> {
   final _scroll = ScrollController();
+  RunsheetPeriod _selectedPeriod = RunsheetPeriod.today;
+  int _slideDirection = 1; // +1 = slide from right, -1 = slide from left
+
+  static const _periodOrder = [
+    RunsheetPeriod.today,
+    RunsheetPeriod.week,
+    RunsheetPeriod.month,
+    RunsheetPeriod.custom,
+  ];
 
   @override
   void initState() {
@@ -53,6 +62,16 @@ class _RunsheetsScreenState extends ConsumerState<RunsheetsScreen> {
       ref.read(runsheetsPageProvider.notifier).refresh();
 
   Future<void> _onPeriodChanged(RunsheetPeriod p) async {
+    if (p == _selectedPeriod) return;
+    final oldIdx = _periodOrder.indexOf(_selectedPeriod);
+    final newIdx = _periodOrder.indexOf(p);
+    // Update direction + selected period immediately so the animation fires
+    // at tap time, not when the async data eventually loads.
+    setState(() {
+      _slideDirection = newIdx > oldIdx ? 1 : -1;
+      _selectedPeriod = p;
+    });
+
     if (p == RunsheetPeriod.custom) {
       final now = DateTime.now();
       final range = await showDateRangePicker(
@@ -92,7 +111,6 @@ class _RunsheetsScreenState extends ConsumerState<RunsheetsScreen> {
     final pageAsync = ref.watch(runsheetsPageProvider);
     final pendingOps = ref.watch(pendingOpsCountProvider).valueOrNull ?? 0;
 
-    final currentPeriod = pageAsync.valueOrNull?.period ?? RunsheetPeriod.today;
     final isOffline = pageAsync.valueOrNull?.offline ?? false;
 
     return Column(
@@ -104,7 +122,7 @@ class _RunsheetsScreenState extends ConsumerState<RunsheetsScreen> {
         Padding(
           padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
           child: MbSegmented<RunsheetPeriod>(
-            selected: currentPeriod,
+            selected: _selectedPeriod,
             onChanged: _onPeriodChanged,
             items: [
               MbSegmentedItem(value: RunsheetPeriod.today, label: s.rsPeriodToday),
@@ -124,59 +142,79 @@ class _RunsheetsScreenState extends ConsumerState<RunsheetsScreen> {
 
         // ── Body ─────────────────────────────────────────────────────────────
         Expanded(
-          child: pageAsync.when(
-            loading: () => _SkeletonList(isDark: isDark),
-            error: (e, _) => Center(
-              child: Padding(
-                padding: const EdgeInsets.all(MbSpacing.xl2),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.error_outline, size: 48, color: mbErr),
-                    const SizedBox(height: MbSpacing.md),
-                    Text(
-                      s.rsErrorTitle,
-                      style: MbTypography.h2(mbErr),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: MbSpacing.lg),
-                    FilledButton(
-                      onPressed: _onRefresh,
-                      child: Text(s.dashRetry),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            data: (data) {
-              if (data.items.isEmpty) {
-                return _EmptyBody(s: s, onRefresh: _onRefresh);
-              }
-              return RefreshIndicator(
-                color: mbBlue,
-                onRefresh: _onRefresh,
-                child: ListView.separated(
-                  controller: _scroll,
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  padding: const EdgeInsets.fromLTRB(14, 2, 14, 14),
-                  itemCount: data.items.length + 1, // +1 for footer
-                  separatorBuilder: (_, __) => const SizedBox(height: 13),
-                  itemBuilder: (context, i) {
-                    if (i == data.items.length) {
-                      return _ListFooter(data: data);
-                    }
-                    final rs = data.items[i];
-                    return _RunsheetRow(
-                      key: ValueKey(rs.id),
-                      runsheet: rs,
-                      strings: s,
-                      index: i,
-                      onTap: () => context.push('/runsheets/${rs.id}'),
-                    );
-                  },
-                ),
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 300),
+            transitionBuilder: (child, animation) {
+              final isIncoming = child.key == ValueKey(_selectedPeriod);
+              final dx = isIncoming
+                  ? _slideDirection.toDouble()
+                  : -_slideDirection.toDouble();
+              return SlideTransition(
+                position: Tween<Offset>(
+                  begin: Offset(dx, 0),
+                  end: Offset.zero,
+                ).animate(CurvedAnimation(
+                    parent: animation, curve: Curves.easeOutCubic)),
+                child: child,
               );
             },
+            child: KeyedSubtree(
+              key: ValueKey(_selectedPeriod),
+              child: pageAsync.when(
+                loading: () => _SkeletonList(isDark: isDark),
+                error: (e, _) => Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(MbSpacing.xl2),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.error_outline, size: 48, color: mbErr),
+                        const SizedBox(height: MbSpacing.md),
+                        Text(
+                          s.rsErrorTitle,
+                          style: MbTypography.h2(mbErr),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: MbSpacing.lg),
+                        FilledButton(
+                          onPressed: _onRefresh,
+                          child: Text(s.dashRetry),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                data: (data) {
+                  if (data.items.isEmpty) {
+                    return _EmptyBody(s: s, onRefresh: _onRefresh);
+                  }
+                  return RefreshIndicator(
+                    color: mbBlue,
+                    onRefresh: _onRefresh,
+                    child: ListView.separated(
+                      controller: _scroll,
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.fromLTRB(14, 2, 14, 14),
+                      itemCount: data.items.length + 1, // +1 for footer
+                      separatorBuilder: (_, __) => const SizedBox(height: 13),
+                      itemBuilder: (context, i) {
+                        if (i == data.items.length) {
+                          return _ListFooter(data: data);
+                        }
+                        final rs = data.items[i];
+                        return _RunsheetRow(
+                          key: ValueKey(rs.id),
+                          runsheet: rs,
+                          strings: s,
+                          index: i,
+                          onTap: () => context.push('/runsheets/${rs.id}'),
+                        );
+                      },
+                    ),
+                  );
+                },
+              ),
+            ),
           ),
         ),
       ],
@@ -228,7 +266,7 @@ class _AppBar extends StatelessWidget {
 
 // ── Runsheet row ──────────────────────────────────────────────────────────────
 
-class _RunsheetRow extends StatelessWidget {
+class _RunsheetRow extends StatefulWidget {
   const _RunsheetRow({
     super.key,
     required this.runsheet,
@@ -243,102 +281,138 @@ class _RunsheetRow extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
+  State<_RunsheetRow> createState() => _RunsheetRowState();
+}
+
+class _RunsheetRowState extends State<_RunsheetRow>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<Offset> _slide;
+  late final Animation<double> _fade;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 350),
+    );
+    _slide = Tween<Offset>(
+      begin: const Offset(0, 0.18),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
+    _fade = Tween<double>(begin: 0, end: 1)
+        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
+
+    final delay = Duration(milliseconds: (widget.index * 55).clamp(0, 280));
+    if (delay == Duration.zero) {
+      _ctrl.forward();
+    } else {
+      Future.delayed(delay, () {
+        if (mounted) _ctrl.forward();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final rs = runsheet;
+    final rs = widget.runsheet;
     final isActive = rs.isActive;
 
     final statusLabel = switch (rs.status) {
-      RunsheetStatus.inProgress => strings.rsStatusInProgress,
-      RunsheetStatus.closed => strings.rsStatusClosed,
-      RunsheetStatus.cancelled => strings.rsStatusCancelled,
-      _ => strings.rsStatusUpcoming,
+      RunsheetStatus.inProgress => widget.strings.rsStatusInProgress,
+      RunsheetStatus.closed => widget.strings.rsStatusClosed,
+      RunsheetStatus.cancelled => widget.strings.rsStatusCancelled,
+      _ => widget.strings.rsStatusUpcoming,
     };
 
     final title = rs.name.isNotEmpty && rs.name != rs.label ? rs.name : null;
 
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0, end: 1),
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOut,
-      builder: (_, t, child) => Opacity(
-        opacity: t,
-        child: Transform.translate(offset: Offset(0, 10 * (1 - t)), child: child),
-      ),
-      // ignore delay on rebuilds — only first render
-      child: Semantics(
-        label: 'Runsheet ${rs.label}'
-            '${title != null ? ', $title' : ''}'
-            ', $statusLabel'
-            ', ${strings.rsLineSummary(
-              total: rs.totalShipments,
-              delivered: rs.deliveredCount,
-              failed: rs.failedCount,
-              remaining: rs.pendingCount,
-            )}',
-        button: true,
-        child: MbCard(
-          accentColor: isActive ? mbRed : null,
-          onTap: onTap,
-          padding: const EdgeInsets.all(MbSpacing.md2),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Row 1 — reference chip + title + status badge
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  if (isActive)
-                    MbChip.red(label: rs.label)
-                  else
-                    _NeutralChip(label: rs.label, isDark: isDark),
-                  if (title != null) ...[
-                    const SizedBox(width: 9),
-                    Expanded(
-                      child: Text(
-                        title,
-                        style: MbTypography.bodyBold(
-                          isDark ? mbDarkInk : mbInk,
+    return FadeTransition(
+      opacity: _fade,
+      child: SlideTransition(
+        position: _slide,
+        child: Semantics(
+          label: 'Runsheet ${rs.label}'
+              '${title != null ? ', $title' : ''}'
+              ', $statusLabel'
+              ', ${widget.strings.rsLineSummary(
+                total: rs.totalShipments,
+                delivered: rs.deliveredCount,
+                failed: rs.failedCount,
+                remaining: rs.pendingCount,
+              )}',
+          button: true,
+          child: MbCard(
+            accentColor: isActive ? mbRed : null,
+            onTap: widget.onTap,
+            padding: const EdgeInsets.all(MbSpacing.md2),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Row 1 — reference chip + title + status badge
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    if (isActive)
+                      MbChip.red(label: rs.label)
+                    else
+                      _NeutralChip(label: rs.label, isDark: isDark),
+                    if (title != null) ...[
+                      const SizedBox(width: 9),
+                      Expanded(
+                        child: Text(
+                          title,
+                          style: MbTypography.bodyBold(
+                            isDark ? mbDarkInk : mbInk,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
                       ),
-                    ),
-                  ] else
-                    const Spacer(),
-                  const SizedBox(width: 8),
-                  MbStatusBadge(status: rs.status, label: statusLabel),
-                ],
-              ),
+                    ] else
+                      const Spacer(),
+                    const SizedBox(width: 8),
+                    MbStatusBadge(status: rs.status, label: statusLabel),
+                  ],
+                ),
 
-              // Row 2 — summary sub-line
-              if (rs.totalShipments > 0) ...[
-                const SizedBox(height: 7),
-                Text(
-                  strings.rsLineSummary(
-                    total: rs.totalShipments,
+                // Row 2 — summary sub-line
+                if (rs.totalShipments > 0) ...[
+                  const SizedBox(height: 7),
+                  Text(
+                    widget.strings.rsLineSummary(
+                      total: rs.totalShipments,
+                      delivered: rs.deliveredCount,
+                      failed: rs.failedCount,
+                      remaining: rs.pendingCount,
+                    ),
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w500,
+                      color: isDark ? mbDarkInk2 : mbInk2,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+
+                  // Row 3 — mini progress bar
+                  const SizedBox(height: 8),
+                  MbTriProgress(
                     delivered: rs.deliveredCount,
                     failed: rs.failedCount,
-                    remaining: rs.pendingCount,
+                    total: rs.totalShipments,
                   ),
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    fontWeight: FontWeight.w500,
-                    color: isDark ? mbDarkInk2 : mbInk2,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-
-                // Row 3 — mini progress bar
-                const SizedBox(height: 8),
-                MbTriProgress(
-                  delivered: rs.deliveredCount,
-                  failed: rs.failedCount,
-                  total: rs.totalShipments,
-                ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
