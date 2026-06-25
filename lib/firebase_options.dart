@@ -51,28 +51,26 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions android = FirebaseOptions(
     apiKey: 'AIzaSyBck0DlITuOOIlcsEPpzHhWVpXLhtv4dKg',
-    appId: '1:1009072881450:android:f59af41acd8b1b2d906853',
+    appId: '1:1009072881450:android:3d7d2979ba7603f0906853',
     messagingSenderId: '1009072881450',
     projectId: 'megboss',
     storageBucket: 'megboss.firebasestorage.app',
   );
-
   static const FirebaseOptions ios = FirebaseOptions(
     apiKey: 'AIzaSyC23Si4r4zTs50SzNF1oh7oJRGEkWbeAgE',
-    appId: '1:1009072881450:ios:0f46c148cc7fa4a4906853',
+    appId: '1:1009072881450:ios:e7312fccf49db025906853',
     messagingSenderId: '1009072881450',
     projectId: 'megboss',
     storageBucket: 'megboss.firebasestorage.app',
-    iosBundleId: 'com.example.megaboss',
+    iosBundleId: 'com.megaboss.store',
   );
-
   static const FirebaseOptions macos = FirebaseOptions(
     apiKey: 'AIzaSyC23Si4r4zTs50SzNF1oh7oJRGEkWbeAgE',
-    appId: '1:1009072881450:ios:0f46c148cc7fa4a4906853',
+    appId: '1:1009072881450:ios:e7312fccf49db025906853',
     messagingSenderId: '1009072881450',
     projectId: 'megboss',
     storageBucket: 'megboss.firebasestorage.app',
-    iosBundleId: 'com.example.megaboss',
+    iosBundleId: 'com.megaboss.store',
   );
 
   static const FirebaseOptions windows = FirebaseOptions(

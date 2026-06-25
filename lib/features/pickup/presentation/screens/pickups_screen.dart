@@ -170,7 +170,10 @@ class _PickupsScreenState extends ConsumerState<PickupsScreen> {
                           strings: s,
                           reduceMotion: _reduceMotion,
                           animDelay: Duration(milliseconds: _reduceMotion ? 0 : i * 40),
-                          onTap: () => context.push('/pickups/${filtered[i].id}'),
+                          onTap: () async {
+                            await context.push('/pickups/${filtered[i].id}');
+                            ref.invalidate(pickupsProvider);
+                          },
                         ),
                       ),
                     ),

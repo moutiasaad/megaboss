@@ -75,6 +75,9 @@ dependencies:
   # Camera permission + open settings
   permission_handler: ^11.3.0
 
+  # Scan beeps (success / error short audio cues)
+  audioplayers: ^6.1.0
+
   # RTL + Material localization delegates
   flutter_localizations:
     sdk: flutter
@@ -104,6 +107,7 @@ flutter:
 
   assets:
     - assets/images/
+    - assets/sounds/
 
   # To add custom fonts to your application, add a fonts section here,
   # in this "flutter" section. Each entry in this list should have a

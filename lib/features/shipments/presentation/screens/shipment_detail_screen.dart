@@ -194,6 +194,44 @@ class _ShipmentDetailScreenState extends ConsumerState<ShipmentDetailScreen>
     } catch (_) {}
   }
 
+  // A shipment is terminal once it has been delivered, returned, or failed.
+  // For those statuses the action bar hides the scan button: there is nothing
+  // for the driver to scan/confirm anymore from the detail screen.
+  static bool _isTerminalShipmentStatus(String status) =>
+      status == ShipmentStatus.delivered ||
+      status == ShipmentStatus.returned ||
+      status == ShipmentStatus.failed;
+
+  // Dials the sender (business_owner) when their phone is available. Routed
+  // through _makeCall so the conversation is tracked in the shipment's call
+  // log (same path as recipient calls, just a different number).
+  Future<void> _callSender(ShipmentModel sh, AppStrings s) async {
+    final phone = sh.senderPhone?.trim();
+    if (phone == null || phone.isEmpty) return;
+    await _makeCall(phone);
+  }
+
+  // Opens a picker when the shipment has both phone numbers, otherwise dials
+  // the single available one directly. Used by the recipient card row and the
+  // bottom action bar so the driver can choose which number to call.
+  Future<void> _initiateCall(ShipmentModel sh, AppStrings s) async {
+    final p1 = sh.recipientPhone?.trim();
+    final p2 = sh.recipientPhone2?.trim();
+    final hasP1 = p1 != null && p1.isNotEmpty;
+    final hasP2 = p2 != null && p2.isNotEmpty;
+    if (!hasP1 && !hasP2) return;
+    if (hasP1 && !hasP2) return _makeCall(p1);
+    if (!hasP1 && hasP2) return _makeCall(p2);
+
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      useRootNavigator: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _PhonePickerSheet(primary: p1!, secondary: p2!, s: s),
+    );
+    if (picked != null && picked.isNotEmpty) await _makeCall(picked);
+  }
+
   void _showCallToast(String result, int durationSec, AppStrings s) {
     final (label, color) = switch (result) {
       CallResult.reached => (s.callJoined, mbOk),
@@ -277,8 +315,38 @@ class _ShipmentDetailScreenState extends ConsumerState<ShipmentDetailScreen>
                       shipment: ship,
                       s: s,
                       isDark: isDark,
-                      onCall: _makeCall,
+                      onCallRecipient: () => _initiateCall(ship, s),
                     ),
+                    if (ship.isExchange || ship.requiresOpen) ...[
+                      const SizedBox(height: 10),
+                      _FlagsStrip(shipment: ship, s: s),
+                    ],
+                    if ((ship.senderName ?? '').isNotEmpty ||
+                        (ship.senderPhone ?? '').isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      _SenderCard(
+                        shipment: ship,
+                        s: s,
+                        isDark: isDark,
+                        onCallSender: () => _callSender(ship, s),
+                      ),
+                    ],
+                    if ((ship.designation ?? '').trim().isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      _DescriptionCard(
+                        text: ship.designation!.trim(),
+                        s: s,
+                        isDark: isDark,
+                      ),
+                    ],
+                    if ((ship.notes ?? '').trim().isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      _NoteCard(
+                        text: ship.notes!.trim(),
+                        s: s,
+                        isDark: isDark,
+                      ),
+                    ],
                     const SizedBox(height: 12),
                     if (ship.hasCod) ...[
                       _CodAmount(amount: ship.codAmount!, s: s),
@@ -299,13 +367,30 @@ class _ShipmentDetailScreenState extends ConsumerState<ShipmentDetailScreen>
 
           // ── (F) Fixed action bar ──────────────────────────────────────────
           _ActionBar(
-            phone: shipmentAsync.valueOrNull?.recipientPhone,
+            hasPhone: shipmentAsync.valueOrNull != null &&
+                ((shipmentAsync.value!.recipientPhone?.trim().isNotEmpty ??
+                        false) ||
+                    (shipmentAsync.value!.recipientPhone2?.trim().isNotEmpty ??
+                        false)),
             enabled: shipmentAsync.hasValue,
+            // Hide the scan/mark-delivered button once the shipment reached a
+            // terminal state (delivered / returned / failed) — the driver can't
+            // re-action it from here.
+            canScan: shipmentAsync.valueOrNull != null &&
+                !_isTerminalShipmentStatus(shipmentAsync.value!.status),
             s: s,
             isDark: isDark,
-            onCall: _makeCall,
-            onScan: () =>
-                context.push('/scan/delivery?shipmentId=${widget.id}'),
+            onCallRecipient: () {
+              final sh = shipmentAsync.valueOrNull;
+              if (sh != null) unawaited(_initiateCall(sh, s));
+            },
+            onScan: () async {
+              await context.push('/scan/delivery?shipmentId=${widget.id}');
+              if (!mounted) return;
+              // Refresh detail so a successful delivery flips the status and
+              // hides the scan button on return.
+              ref.invalidate(shipmentDetailProvider(widget.id));
+            },
           ),
         ],
       ),
@@ -343,6 +428,7 @@ class _ShipmentHeader extends StatelessWidget {
                     button: true,
                     child: GestureDetector(
                       onTap: () => context.pop(),
+                      behavior: HitTestBehavior.opaque,
                       child: const SizedBox(
                         width: 40,
                         height: 40,
@@ -572,6 +658,7 @@ class _HeaderMinimal extends StatelessWidget {
             children: [
               GestureDetector(
                 onTap: () => context.pop(),
+                behavior: HitTestBehavior.opaque,
                 child: const SizedBox(
                   width: 40,
                   height: 40,
@@ -620,16 +707,24 @@ class _RecipientCard extends StatelessWidget {
     required this.shipment,
     required this.s,
     required this.isDark,
-    required this.onCall,
+    required this.onCallRecipient,
   });
   final ShipmentModel shipment;
   final AppStrings s;
   final bool isDark;
-  final Future<void> Function(String phone) onCall;
+  final VoidCallback onCallRecipient;
 
   @override
   Widget build(BuildContext context) {
-    final phone = shipment.recipientPhone;
+    final p1 = shipment.recipientPhone?.trim();
+    final p2 = shipment.recipientPhone2?.trim();
+    final hasP1 = p1 != null && p1.isNotEmpty;
+    final hasP2 = p2 != null && p2.isNotEmpty;
+    final phoneDisplay = hasP1 && hasP2
+        ? '$p1 · $p2'
+        : (hasP1 ? p1 : (hasP2 ? p2 : null));
+    final hasAnyPhone = hasP1 || hasP2;
+
     final addressParts = <String>[];
     if (shipment.address.isNotEmpty) addressParts.add(shipment.address);
     if (shipment.city.isNotEmpty) addressParts.add(shipment.city);
@@ -659,11 +754,10 @@ class _RecipientCard extends StatelessWidget {
           _KvRow(
             icon: Icons.phone_outlined,
             label: s.colPhone,
-            value: phone ?? '—',
+            value: phoneDisplay ?? '—',
             isDark: isDark,
-            actionIcon:
-                phone != null ? Icons.phone_rounded : null,
-            onTap: phone != null ? () => onCall(phone) : null,
+            actionIcon: hasAnyPhone ? Icons.phone_rounded : null,
+            onTap: hasAnyPhone ? onCallRecipient : null,
           ),
           Divider(
               height: 1,
@@ -812,7 +906,7 @@ class _CodAmount extends StatelessWidget {
               ),
             ),
             Text(
-              '${_fmt(amount)} DH',
+              '${_fmt(amount)} TND',
               style: GoogleFonts.archivo(
                 fontSize: 19,
                 fontWeight: FontWeight.w800,
@@ -1208,19 +1302,21 @@ class _ErrorBody extends StatelessWidget {
 
 class _ActionBar extends StatelessWidget {
   const _ActionBar({
-    required this.phone,
+    required this.hasPhone,
     required this.enabled,
+    required this.canScan,
     required this.s,
     required this.isDark,
-    required this.onCall,
+    required this.onCallRecipient,
     required this.onScan,
   });
 
-  final String? phone;
+  final bool hasPhone;
   final bool enabled;
+  final bool canScan;
   final AppStrings s;
   final bool isDark;
-  final Future<void> Function(String phone) onCall;
+  final VoidCallback onCallRecipient;
   final VoidCallback onScan;
 
   @override
@@ -1243,45 +1339,44 @@ class _ActionBar extends StatelessWidget {
             child: _GhostBtn(
               icon: Icons.phone_outlined,
               label: s.colCall,
-              enabled: enabled && phone != null,
-              onTap: () {
-                final p = phone;
-                if (p != null) unawaited(onCall(p));
-              },
+              enabled: enabled && hasPhone,
+              onTap: onCallRecipient,
             ),
           ),
-          const SizedBox(height: 9),
-          SizedBox(
-            width: double.infinity,
-            height: 48,
-            child: FilledButton.icon(
-              onPressed: enabled
-                  ? () {
-                      HapticFeedback.lightImpact();
-                      onScan();
-                    }
-                  : null,
-              style: FilledButton.styleFrom(
-                backgroundColor: mbRed,
-                disabledBackgroundColor: mbErr.withAlpha(0x55),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(11)),
-              ),
-              icon: CustomPaint(
-                size: const Size(16, 16),
-                painter:
-                    const MbScanIconPainter(color: Colors.white),
-              ),
-              label: Text(
-                s.colScanMark,
-                style: GoogleFonts.archivo(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.white,
+          if (canScan) ...[
+            const SizedBox(height: 9),
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: FilledButton.icon(
+                onPressed: enabled
+                    ? () {
+                        HapticFeedback.lightImpact();
+                        onScan();
+                      }
+                    : null,
+                style: FilledButton.styleFrom(
+                  backgroundColor: mbRed,
+                  disabledBackgroundColor: mbErr.withAlpha(0x55),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(11)),
+                ),
+                icon: CustomPaint(
+                  size: const Size(16, 16),
+                  painter:
+                      const MbScanIconPainter(color: Colors.white),
+                ),
+                label: Text(
+                  s.colScanMark,
+                  style: GoogleFonts.archivo(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                  ),
                 ),
               ),
             ),
-          ),
+          ],
         ],
       ),
     );
@@ -1324,3 +1419,380 @@ class _GhostBtn extends StatelessWidget {
   }
 }
 
+// ── Phone picker sheet (when shipment has 2 numbers) ─────────────────────────
+
+class _PhonePickerSheet extends StatelessWidget {
+  const _PhonePickerSheet({
+    required this.primary,
+    required this.secondary,
+    required this.s,
+  });
+  final String primary;
+  final String secondary;
+  final AppStrings s;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bg = isDark ? mbDarkSurface : mbSurface;
+    final bottom = MediaQuery.paddingOf(context).bottom;
+    return Container(
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(0, 10, 0, 8 + bottom),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Center(
+                child: Container(
+                  width: 38,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: isDark ? mbDarkLine : mbLine,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 18),
+                child: Text(
+                  s.rsdCallPickTitle,
+                  style: GoogleFonts.archivo(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: isDark ? mbDarkInk : mbInk,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              _PhoneTile(
+                role: s.rsdPhonePrimary,
+                phone: primary,
+                onTap: () => Navigator.of(context).pop(primary),
+                isDark: isDark,
+              ),
+              _PhoneTile(
+                role: s.rsdPhoneSecondary,
+                phone: secondary,
+                onTap: () => Navigator.of(context).pop(secondary),
+                isDark: isDark,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PhoneTile extends StatelessWidget {
+  const _PhoneTile({
+    required this.role,
+    required this.phone,
+    required this.onTap,
+    required this.isDark,
+  });
+  final String role;
+  final String phone;
+  final VoidCallback onTap;
+  final bool isDark;
+
+  @override
+  Widget build(BuildContext context) {
+    final ink = isDark ? mbDarkInk : mbInk;
+    final ink2 = isDark ? mbDarkInk2 : mbInk2;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: mbBlue.withAlpha(0x1A),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              alignment: Alignment.center,
+              child: const Icon(Icons.phone_rounded, color: mbBlue, size: 18),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    role,
+                    style: GoogleFonts.archivo(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.4,
+                      color: ink2,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    phone,
+                    style: GoogleFonts.splineSansMono(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: ink,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right_rounded, size: 20, color: ink2),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Delivery flags strip (Échange, Ouvrir colis) ────────────────────────────
+
+class _FlagsStrip extends StatelessWidget {
+  const _FlagsStrip({required this.shipment, required this.s});
+  final ShipmentModel shipment;
+  final AppStrings s;
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: [
+        if (shipment.isExchange)
+          _DetailFlagChip(
+            icon: Icons.swap_horizontal_circle_outlined,
+            label: s.rsdFlagExchange,
+            color: mbBlue,
+            bg: mbPendBg,
+          ),
+        if (shipment.requiresOpen)
+          _DetailFlagChip(
+            icon: Icons.unarchive_outlined,
+            label: s.rsdFlagOpen,
+            color: mbWarn,
+            bg: mbWarnBg,
+          ),
+      ],
+    );
+  }
+}
+
+class _DetailFlagChip extends StatelessWidget {
+  const _DetailFlagChip({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.bg,
+  });
+  final IconData icon;
+  final String label;
+  final Color color;
+  final Color bg;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(9, 6, 11, 6),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withAlpha(0x55), width: 1),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: GoogleFonts.archivo(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: color,
+              letterSpacing: 0.2,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Sender card (business owner — name + phone, dial logs to shipment) ──────
+
+class _SenderCard extends StatelessWidget {
+  const _SenderCard({
+    required this.shipment,
+    required this.s,
+    required this.isDark,
+    required this.onCallSender,
+  });
+  final ShipmentModel shipment;
+  final AppStrings s;
+  final bool isDark;
+  final VoidCallback onCallSender;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = (shipment.senderName ?? '').trim();
+    final phone = (shipment.senderPhone ?? '').trim();
+    final hasPhone = phone.isNotEmpty;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: isDark ? mbDarkSurface : mbSurface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: isDark ? mbDarkLine : mbLine, width: 1),
+      ),
+      child: Column(
+        children: [
+          _KvRow(
+            icon: Icons.store_mall_directory_outlined,
+            label: s.colSender,
+            value: name.isNotEmpty ? name : '—',
+            isDark: isDark,
+          ),
+          Divider(
+              height: 1,
+              thickness: 1,
+              color: isDark ? mbDarkLine2 : mbLine2),
+          _KvRow(
+            icon: Icons.phone_outlined,
+            label: s.colPhone,
+            value: hasPhone ? phone : '—',
+            isDark: isDark,
+            actionIcon: hasPhone ? Icons.phone_rounded : null,
+            onTap: hasPhone ? onCallSender : null,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Product description card ────────────────────────────────────────────────
+
+class _DescriptionCard extends StatelessWidget {
+  const _DescriptionCard({
+    required this.text,
+    required this.s,
+    required this.isDark,
+  });
+  final String text;
+  final AppStrings s;
+  final bool isDark;
+
+  @override
+  Widget build(BuildContext context) {
+    return _LabeledTextBlock(
+      icon: Icons.inventory_2_outlined,
+      label: s.colDescription,
+      text: text,
+      isDark: isDark,
+    );
+  }
+}
+
+// ── Note card (delivery instructions from the seller) ───────────────────────
+
+class _NoteCard extends StatelessWidget {
+  const _NoteCard({
+    required this.text,
+    required this.s,
+    required this.isDark,
+  });
+  final String text;
+  final AppStrings s;
+  final bool isDark;
+
+  @override
+  Widget build(BuildContext context) {
+    return _LabeledTextBlock(
+      icon: Icons.sticky_note_2_outlined,
+      label: s.colNote,
+      text: text,
+      isDark: isDark,
+      accent: true,
+    );
+  }
+}
+
+// Compact card with a small CAP label, an icon, and a multiline body.
+// Used by both _DescriptionCard and _NoteCard.
+class _LabeledTextBlock extends StatelessWidget {
+  const _LabeledTextBlock({
+    required this.icon,
+    required this.label,
+    required this.text,
+    required this.isDark,
+    this.accent = false,
+  });
+  final IconData icon;
+  final String label;
+  final String text;
+  final bool isDark;
+  final bool accent;
+
+  @override
+  Widget build(BuildContext context) {
+    final ink = isDark ? mbDarkInk : mbInk;
+    final ink2 = isDark ? mbDarkInk2 : mbInk2;
+    final ink3 = isDark ? mbDarkInk3 : mbInk3;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 13),
+      decoration: BoxDecoration(
+        color: accent
+            ? (isDark ? mbDarkSurface2 : mbWarnBg)
+            : (isDark ? mbDarkSurface : mbSurface),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: accent ? mbWarn.withAlpha(0x55) : (isDark ? mbDarkLine : mbLine),
+          width: 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 14, color: accent ? mbWarn : ink3),
+              const SizedBox(width: 7),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.04 * 10,
+                  color: accent ? mbWarn : ink3,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            text,
+            style: GoogleFonts.hankenGrotesk(
+              fontSize: 13.5,
+              height: 1.42,
+              color: accent ? ink : ink2,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

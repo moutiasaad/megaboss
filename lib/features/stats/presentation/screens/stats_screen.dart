@@ -128,9 +128,10 @@ class _StatsScreenState extends ConsumerState<StatsScreen> {
     final locale = ref.watch(localeProvider).languageCode;
     final s = AppStrings.of(locale);
     final async = ref.watch(statsProvider(_params));
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
-      backgroundColor: mbSurface2,
+      backgroundColor: isDark ? mbDarkBg : mbSurface2,
       body: Column(
         children: [
           _AppBar(title: s.statsTitle),
@@ -176,10 +177,14 @@ class _StatsScreenState extends ConsumerState<StatsScreen> {
                         stats: stats,
                         strings: s,
                         locale: locale,
+                        isDark: isDark,
                       ),
-                      loading: () => const _LoadingSkeleton(),
-                      error: (_, __) =>
-                          _ErrorView(strings: s, onRetry: _refresh),
+                      loading: () => _LoadingSkeleton(isDark: isDark),
+                      error: (_, __) => _ErrorView(
+                        strings: s,
+                        onRetry: _refresh,
+                        isDark: isDark,
+                      ),
                     ),
                   ],
                 ),
@@ -257,18 +262,17 @@ class _StatsBody extends StatelessWidget {
     required this.stats,
     required this.strings,
     required this.locale,
+    required this.isDark,
   });
 
   final StatsModel stats;
   final AppStrings strings;
   final String locale;
+  final bool isDark;
 
   @override
   Widget build(BuildContext context) {
     final s = strings;
-    final sorted = [...stats.topFailureReasons]
-      ..sort((a, b) => b.count.compareTo(a.count));
-    final top5 = sorted.take(5).toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -276,31 +280,34 @@ class _StatsBody extends StatelessWidget {
         // (C) KPI grid
         Padding(
           padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
-          child: _KpiGrid(stats: stats, strings: s, locale: locale),
+          child: _KpiGrid(
+              stats: stats, strings: s, locale: locale, isDark: isDark),
         ),
         // (D) Bar chart
         const SizedBox(height: MbSpacing.md),
-        _SectionLabel(s.statsChartTitle),
+        _SectionLabel(s.statsChartTitle, isDark: isDark),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14),
           child: MbCard(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 26),
             child: stats.dailyStats.isEmpty ||
                     stats.dailyStats.every((d) => d.delivered == 0)
-                ? _ChartEmpty(label: s.statsEmpty)
-                : _BarChart(dailyStats: stats.dailyStats, locale: locale),
+                ? _ChartEmpty(label: s.statsEmpty, isDark: isDark)
+                : _BarChart(
+                    dailyStats: stats.dailyStats,
+                    locale: locale,
+                    isDark: isDark,
+                  ),
           ),
         ),
-        // (E) Failure reasons
+        // (E) Detail breakdown
         const SizedBox(height: MbSpacing.md),
-        _SectionLabel(s.statsTopFailTitle),
+        _SectionLabel(s.statsDetailTitle, isDark: isDark),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14),
           child: MbCard(
             padding: EdgeInsets.zero,
-            child: top5.isEmpty
-                ? _NoFailures(label: s.statsNoFailures)
-                : _FailureTable(reasons: top5),
+            child: _DetailList(stats: stats, strings: s, isDark: isDark),
           ),
         ),
       ],
@@ -315,17 +322,20 @@ class _KpiGrid extends StatelessWidget {
     required this.stats,
     required this.strings,
     required this.locale,
+    required this.isDark,
   });
 
   final StatsModel stats;
   final AppStrings strings;
   final String locale;
+  final bool isDark;
 
   @override
   Widget build(BuildContext context) {
     final s = strings;
     final codStr = _formatCod(stats.codCollected, locale);
     final reachStr = '${(stats.reachabilityRate * 100).round()}%';
+    final neutralStat = isDark ? mbDarkInk : mbInk;
 
     return GridView.count(
       crossAxisCount: 2,
@@ -340,24 +350,28 @@ class _KpiGrid extends StatelessWidget {
           label: s.statsKpiSuccess,
           color: mbOk,
           a11y: '${s.statsKpiSuccess}, ${stats.deliveredCount}',
+          isDark: isDark,
         ),
         _KpiCard(
-          value: '${stats.failedCount}',
+          value: '${stats.returnsCount}',
           label: s.statsKpiFailed,
           color: mbErr,
-          a11y: '${s.statsKpiFailed}, ${stats.failedCount}',
+          a11y: '${s.statsKpiFailed}, ${stats.returnsCount}',
+          isDark: isDark,
         ),
         _KpiCard(
           value: codStr,
           label: s.statsKpiCod(stats.codCurrency),
           color: mbBlue,
           a11y: '${s.statsKpiCod(stats.codCurrency)}, $codStr',
+          isDark: isDark,
         ),
         _KpiCard(
           value: reachStr,
           label: s.statsKpiReachRate,
-          color: mbInk,
+          color: neutralStat,
           a11y: '${s.statsKpiReachRate}, $reachStr',
+          isDark: isDark,
         ),
       ],
     );
@@ -370,12 +384,14 @@ class _KpiCard extends StatelessWidget {
     required this.label,
     required this.color,
     required this.a11y,
+    required this.isDark,
   });
 
   final String value;
   final String label;
   final Color color;
   final String a11y;
+  final bool isDark;
 
   @override
   Widget build(BuildContext context) {
@@ -397,7 +413,7 @@ class _KpiCard extends StatelessWidget {
               style: GoogleFonts.hankenGrotesk(
                 fontSize: 10.5,
                 fontWeight: FontWeight.w600,
-                color: mbInk3,
+                color: isDark ? mbDarkInk3 : mbInk3,
                 letterSpacing: 0.315,
               ),
             ),
@@ -411,8 +427,9 @@ class _KpiCard extends StatelessWidget {
 // ── Section label ─────────────────────────────────────────────────────────────
 
 class _SectionLabel extends StatelessWidget {
-  const _SectionLabel(this.text);
+  const _SectionLabel(this.text, {required this.isDark});
   final String text;
+  final bool isDark;
 
   @override
   Widget build(BuildContext context) {
@@ -423,7 +440,7 @@ class _SectionLabel extends StatelessWidget {
         style: GoogleFonts.hankenGrotesk(
           fontSize: 10.5,
           fontWeight: FontWeight.w700,
-          color: mbInk3,
+          color: isDark ? mbDarkInk3 : mbInk3,
           letterSpacing: 0.315,
         ),
       ),
@@ -434,10 +451,15 @@ class _SectionLabel extends StatelessWidget {
 // ── Bar chart ─────────────────────────────────────────────────────────────────
 
 class _BarChart extends StatelessWidget {
-  const _BarChart({required this.dailyStats, required this.locale});
+  const _BarChart({
+    required this.dailyStats,
+    required this.locale,
+    required this.isDark,
+  });
 
   final List<DailyStatModel> dailyStats;
   final String locale;
+  final bool isDark;
 
   @override
   Widget build(BuildContext context) {
@@ -448,6 +470,9 @@ class _BarChart extends StatelessWidget {
     final maxVal =
         ordered.fold(0, (m, d) => d.delivered > m ? d.delivered : m);
     final maxY = maxVal > 0 ? (maxVal * 1.25).ceilToDouble() : 8.0;
+    final gridColor = isDark ? mbDarkLine2 : mbLine2;
+    final axisLabelColor = isDark ? mbDarkInk3 : mbInk3;
+    final tooltipBg = (isDark ? mbDarkSurface2 : mbInk).withAlpha(0xDD);
 
     final groups = ordered.asMap().entries.map((e) {
       final i = e.key;
@@ -484,7 +509,7 @@ class _BarChart extends StatelessWidget {
               drawVerticalLine: false,
               horizontalInterval: maxY / 4,
               getDrawingHorizontalLine: (_) =>
-                  const FlLine(color: mbLine2, strokeWidth: 1),
+                  FlLine(color: gridColor, strokeWidth: 1),
             ),
             titlesData: FlTitlesData(
               leftTitles: const AxisTitles(
@@ -512,7 +537,7 @@ class _BarChart extends StatelessWidget {
                         labels[i],
                         style: GoogleFonts.hankenGrotesk(
                           fontSize: 9,
-                          color: mbInk3,
+                          color: axisLabelColor,
                         ),
                       ),
                     );
@@ -522,7 +547,7 @@ class _BarChart extends StatelessWidget {
             ),
             barTouchData: BarTouchData(
               touchTooltipData: BarTouchTooltipData(
-                getTooltipColor: (_) => mbInk.withAlpha(0xDD),
+                getTooltipColor: (_) => tooltipBg,
                 getTooltipItem: (group, _, rod, __) => BarTooltipItem(
                   '${labels[group.x]} · ${rod.toY.toInt()}',
                   GoogleFonts.hankenGrotesk(
@@ -543,8 +568,9 @@ class _BarChart extends StatelessWidget {
 }
 
 class _ChartEmpty extends StatelessWidget {
-  const _ChartEmpty({required this.label});
+  const _ChartEmpty({required this.label, required this.isDark});
   final String label;
+  final bool isDark;
 
   @override
   Widget build(BuildContext context) {
@@ -553,93 +579,134 @@ class _ChartEmpty extends StatelessWidget {
       child: Center(
         child: Text(
           label,
-          style: GoogleFonts.hankenGrotesk(fontSize: 13, color: mbInk3),
+          style: GoogleFonts.hankenGrotesk(
+            fontSize: 13,
+            color: isDark ? mbDarkInk3 : mbInk3,
+          ),
         ),
       ),
     );
   }
 }
 
-// ── Failure table ─────────────────────────────────────────────────────────────
+// ── Detail breakdown list ─────────────────────────────────────────────────────
 
-class _FailureTable extends StatelessWidget {
-  const _FailureTable({required this.reasons});
-  final List<FailureReasonModel> reasons;
+class _DetailList extends StatelessWidget {
+  const _DetailList({
+    required this.stats,
+    required this.strings,
+    required this.isDark,
+  });
+
+  final StatsModel stats;
+  final AppStrings strings;
+  final bool isDark;
 
   @override
   Widget build(BuildContext context) {
-    final max = reasons.fold(0, (m, r) => r.count > m ? r.count : m);
+    final s = strings;
+    final callsIconColor = isDark ? mbDarkInk2 : mbInk2;
+    final divider = isDark ? mbDarkLine2 : mbLine2;
+    final rows = <(IconData, Color, String, String)>[
+      (
+        Icons.event_repeat_rounded,
+        mbBlue,
+        s.statsDetailRescheduled,
+        '${stats.rescheduledCount}',
+      ),
+      (
+        Icons.replay_rounded,
+        mbErr,
+        s.statsDetailReturned,
+        '${stats.returnedCount}',
+      ),
+      (
+        Icons.inventory_2_rounded,
+        mbOk,
+        s.statsDetailPickups,
+        '${stats.pickupsCollected}',
+      ),
+      (
+        Icons.assignment_turned_in_rounded,
+        mbBlue,
+        s.statsDetailRunsheets,
+        '${stats.runsheetsClosed}',
+      ),
+      (
+        Icons.call_rounded,
+        callsIconColor,
+        s.statsDetailCalls,
+        '${stats.callsMade}',
+      ),
+    ];
+
     return Column(
-      children: reasons.asMap().entries.map((e) {
-        final i = e.key;
-        final r = e.value;
-        return Column(
-          children: [
-            if (i > 0) const Divider(color: mbLine2, height: 1, thickness: 1),
-            _ReasonRow(
-              reason: r.reason,
-              count: r.count,
-              fraction: max > 0 ? r.count / max : 0.0,
-            ),
-          ],
-        );
-      }).toList(),
+      children: [
+        for (int i = 0; i < rows.length; i++) ...[
+          if (i > 0) Divider(color: divider, height: 1, thickness: 1),
+          _DetailRow(
+            icon: rows[i].$1,
+            color: rows[i].$2,
+            label: rows[i].$3,
+            value: rows[i].$4,
+            isDark: isDark,
+          ),
+        ],
+      ],
     );
   }
 }
 
-class _ReasonRow extends StatelessWidget {
-  const _ReasonRow({
-    required this.reason,
-    required this.count,
-    required this.fraction,
+class _DetailRow extends StatelessWidget {
+  const _DetailRow({
+    required this.icon,
+    required this.color,
+    required this.label,
+    required this.value,
+    required this.isDark,
   });
 
-  final String reason;
-  final int count;
-  final double fraction;
+  final IconData icon;
+  final Color color;
+  final String label;
+  final String value;
+  final bool isDark;
 
   @override
   Widget build(BuildContext context) {
+    final ink = isDark ? mbDarkInk : mbInk;
+    // In dark mode tints fade against the dark surface; bump alpha a bit.
+    final tintAlpha = isDark ? 0x33 : 0x1F;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
       child: Row(
         children: [
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: color.withAlpha(tintAlpha),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, size: 15, color: color),
+          ),
+          const SizedBox(width: 11),
           Expanded(
-            flex: 3,
             child: Text(
-              reason,
-              overflow: TextOverflow.ellipsis,
+              label,
               style: GoogleFonts.hankenGrotesk(
-                fontSize: 12.5,
-                color: mbInk,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                color: ink,
               ),
             ),
           ),
-          const SizedBox(width: 10),
-          Expanded(
-            flex: 3,
-            child: Align(
-              alignment: AlignmentDirectional.centerStart,
-              child: FractionallySizedBox(
-                widthFactor: fraction.clamp(0.05, 1.0),
-                child: Container(
-                  height: 6,
-                  decoration: BoxDecoration(
-                    color: mbErr,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
           Text(
-            '$count',
+            value,
             style: GoogleFonts.archivo(
-              fontSize: 13,
+              fontSize: 14,
               fontWeight: FontWeight.w700,
-              color: mbInk2,
+              color: ink,
             ),
           ),
         ],
@@ -648,27 +715,11 @@ class _ReasonRow extends StatelessWidget {
   }
 }
 
-class _NoFailures extends StatelessWidget {
-  const _NoFailures({required this.label});
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 16, 14, 16),
-      child: Text(
-        label,
-        textAlign: TextAlign.center,
-        style: GoogleFonts.hankenGrotesk(fontSize: 13, color: mbInk3),
-      ),
-    );
-  }
-}
-
 // ── Loading skeleton ──────────────────────────────────────────────────────────
 
 class _LoadingSkeleton extends StatelessWidget {
-  const _LoadingSkeleton();
+  const _LoadingSkeleton({required this.isDark});
+  final bool isDark;
 
   @override
   Widget build(BuildContext context) {
@@ -683,12 +734,12 @@ class _LoadingSkeleton extends StatelessWidget {
             mainAxisSpacing: 9,
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
-            children: List.generate(4, (_) => const _SkeletonBox()),
+            children: List.generate(4, (_) => _SkeletonBox(isDark: isDark)),
           ),
           const SizedBox(height: 16),
-          const _SkeletonBox(height: 160),
+          _SkeletonBox(height: 160, isDark: isDark),
           const SizedBox(height: 16),
-          const _SkeletonBox(height: 130),
+          _SkeletonBox(height: 130, isDark: isDark),
         ],
       ),
     );
@@ -696,15 +747,16 @@ class _LoadingSkeleton extends StatelessWidget {
 }
 
 class _SkeletonBox extends StatelessWidget {
-  const _SkeletonBox({this.height});
+  const _SkeletonBox({this.height, required this.isDark});
   final double? height;
+  final bool isDark;
 
   @override
   Widget build(BuildContext context) {
     return Container(
       height: height,
       decoration: BoxDecoration(
-        color: mbLine2,
+        color: isDark ? mbDarkLine2 : mbLine2,
         borderRadius: BorderRadius.circular(MbRadius.card),
       ),
     );
@@ -714,9 +766,14 @@ class _SkeletonBox extends StatelessWidget {
 // ── Error view ────────────────────────────────────────────────────────────────
 
 class _ErrorView extends StatelessWidget {
-  const _ErrorView({required this.strings, required this.onRetry});
+  const _ErrorView({
+    required this.strings,
+    required this.onRetry,
+    required this.isDark,
+  });
   final AppStrings strings;
   final VoidCallback onRetry;
+  final bool isDark;
 
   @override
   Widget build(BuildContext context) {
@@ -724,12 +781,19 @@ class _ErrorView extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 48),
       child: Column(
         children: [
-          const Icon(Icons.cloud_off_rounded, size: 40, color: mbInk3),
+          Icon(
+            Icons.cloud_off_rounded,
+            size: 40,
+            color: isDark ? mbDarkInk3 : mbInk3,
+          ),
           const SizedBox(height: MbSpacing.md),
           Text(
             strings.statsError,
             textAlign: TextAlign.center,
-            style: GoogleFonts.hankenGrotesk(fontSize: 14, color: mbInk2),
+            style: GoogleFonts.hankenGrotesk(
+              fontSize: 14,
+              color: isDark ? mbDarkInk2 : mbInk2,
+            ),
           ),
           const SizedBox(height: MbSpacing.lg),
           TextButton(

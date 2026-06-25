@@ -9,7 +9,7 @@ class PickupService {
   const PickupService(this._client);
   final ApiClient _client;
 
-  // GET /driver/pickups/active
+  // GET /driver/pickups/active — only active/in-progress pickups
   Future<List<PickupModel>> getActive() async {
     try {
       final data = await _client.get<dynamic>(Endpoints.pickupsActive);

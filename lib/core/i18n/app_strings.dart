@@ -225,9 +225,9 @@ class AppStrings {
       };
 
   String get dashCod => switch (locale) {
-        'ar' => 'الدفع عند الاستلام · درهم',
-        'en' => 'COD · MAD',
-        _ => 'COD · DH',
+        'ar' => 'الدفع عند الاستلام · دينار',
+        'en' => 'COD · TND',
+        _ => 'COD · TND',
       };
 
   String get dashScan => switch (locale) {
@@ -366,6 +366,14 @@ class AppStrings {
         _ => 'Annulé',
       };
 
+  // Virtual status: server still reports `in_progress` but every colis has
+  // been actioned (delivered/returned). Driver just needs to tap Clôturer.
+  String get rsStatusCompleted => switch (locale) {
+        'ar' => 'منتهٍ',
+        'en' => 'Completed',
+        _ => 'Terminé',
+      };
+
   String rsLineSummary({
     required int total,
     required int delivered,
@@ -501,9 +509,9 @@ class AppStrings {
       };
 
   String rsdFilterFailed(int n) => switch (locale) {
-        'ar' => 'الفشل $n',
-        'en' => 'Failed $n',
-        _ => 'Échecs $n',
+        'ar' => 'المرتجعات $n',
+        'en' => 'Returns $n',
+        _ => 'Retours $n',
       };
 
   String get rsdGroupTodo => switch (locale) {
@@ -516,6 +524,12 @@ class AppStrings {
         'ar' => 'المستحق: $amount',
         'en' => 'To collect $amount',
         _ => 'À percevoir $amount',
+      };
+
+  String rsdGroupSumCollected(String amount) => switch (locale) {
+        'ar' => 'محصّل: $amount',
+        'en' => 'Collected $amount',
+        _ => 'Encaissé $amount',
       };
 
   String get rsdNextStop => switch (locale) {
@@ -563,6 +577,93 @@ class AppStrings {
     return parts.join(' · ');
   }
 
+  String rsdRescheduledAt(String reason, String time) {
+    final parts = [
+      switch (locale) {
+        'ar' => 'تمت إعادة الجدولة',
+        'en' => 'Rescheduled',
+        _ => 'Reprogrammé'
+      },
+      if (reason.isNotEmpty) reason,
+      if (time.isNotEmpty) time,
+    ];
+    return parts.join(' · ');
+  }
+
+  String rsdReturnedAt(String reason, String time) {
+    final parts = [
+      switch (locale) {
+        'ar' => 'مرتجع',
+        'en' => 'Returned',
+        _ => 'Retour'
+      },
+      if (reason.isNotEmpty) reason,
+      if (time.isNotEmpty) time,
+    ];
+    return parts.join(' · ');
+  }
+
+  // Return / reschedule details sheet
+  String get rsdReturnMotifLabel => switch (locale) {
+        'ar' => 'السبب *',
+        'en' => 'Reason *',
+        _ => 'Motif *',
+      };
+
+  String get rsdReturnMotifPlaceholder => switch (locale) {
+        'ar' => 'اختر السبب...',
+        'en' => 'Select a reason...',
+        _ => 'Sélectionnez un motif...',
+      };
+
+  String get rsdReturnDetailsLabel => switch (locale) {
+        'ar' => 'تفاصيل (اختياري)',
+        'en' => 'Details (optional)',
+        _ => 'Détails (optionnel)',
+      };
+
+  String get rsdReturnDetailsPlaceholder => switch (locale) {
+        'ar' => 'تفاصيل إضافية...',
+        'en' => 'Additional details...',
+        _ => 'Précisions supplémentaires...',
+      };
+
+  String get rsdRescheduleDateLabel => switch (locale) {
+        'ar' => 'تاريخ إعادة الجدولة *',
+        'en' => 'Reschedule date *',
+        _ => 'Date de reprogrammation *',
+      };
+
+  String get rsdRescheduleDatePick => switch (locale) {
+        'ar' => 'اختر تاريخًا',
+        'en' => 'Pick a date',
+        _ => 'Choisir une date',
+      };
+
+  String get rsdReturnConfirm => switch (locale) {
+        'ar' => 'تأكيد',
+        'en' => 'Confirm',
+        _ => 'Confirmer',
+      };
+
+  String get rsdReturnSavedDefinitive => switch (locale) {
+        'ar' => 'تم تسجيل المرتجع',
+        'en' => 'Return saved',
+        _ => 'Retour enregistré',
+      };
+
+  String get rsdReturnSavedReschedule => switch (locale) {
+        'ar' => 'تمت إعادة الجدولة',
+        'en' => 'Reschedule saved',
+        _ => 'Reprogrammation enregistrée',
+      };
+
+  String get rsdSwipeReturn => switch (locale) {
+        'ar' => 'إرجاع',
+        'en' => 'Return',
+        _ => 'Retour',
+      };
+
   String get rsdEmptyPending => switch (locale) {
         'ar' => 'لا توجد طرود قيد الانتظار',
         'en' => 'No pending parcels',
@@ -573,6 +674,69 @@ class AppStrings {
         'ar' => 'لا توجد نتائج',
         'en' => 'No results',
         _ => 'Aucun résultat',
+      };
+
+  // Sort sheet — runsheet shipment list
+  String get rsdSortTitle => switch (locale) {
+        'ar' => 'ترتيب الطرود',
+        'en' => 'Sort shipments',
+        _ => 'Trier les colis',
+      };
+
+  String get rsdSortDefault => switch (locale) {
+        'ar' => 'افتراضي',
+        'en' => 'Default',
+        _ => 'Par défaut',
+      };
+
+  String get rsdSortByCity => switch (locale) {
+        'ar' => 'حسب المدينة',
+        'en' => 'By city',
+        _ => 'Par ville',
+      };
+
+  String get rsdSortByName => switch (locale) {
+        'ar' => 'حسب الاسم (أ-ي)',
+        'en' => 'By name (A–Z)',
+        _ => 'Par nom (A–Z)',
+      };
+
+  // Phone picker (when shipment has 2 numbers)
+  String get rsdCallPickTitle => switch (locale) {
+        'ar' => 'اختر الرقم',
+        'en' => 'Choose a number',
+        _ => 'Choisir un numéro',
+      };
+
+  String get rsdPhonePrimary => switch (locale) {
+        'ar' => 'الرقم الرئيسي',
+        'en' => 'Primary',
+        _ => 'Principal',
+      };
+
+  String get rsdPhoneSecondary => switch (locale) {
+        'ar' => 'الرقم الثاني',
+        'en' => 'Secondary',
+        _ => 'Secondaire',
+      };
+
+  // Delivery flags shown inline on stop cards
+  String get rsdNoteLabel => switch (locale) {
+        'ar' => 'ملاحظة',
+        'en' => 'Note',
+        _ => 'Note',
+      };
+
+  String get rsdFlagOpen => switch (locale) {
+        'ar' => 'فتح الطرد',
+        'en' => 'Open package',
+        _ => 'Ouvrir colis',
+      };
+
+  String get rsdFlagExchange => switch (locale) {
+        'ar' => 'تبديل',
+        'en' => 'Exchange',
+        _ => 'Échange',
       };
 
   // Shipment statuses (used in detail + shipment rows)
@@ -605,6 +769,24 @@ class AppStrings {
         'ar' => 'طرد',
         'en' => 'Parcel',
         _ => 'Colis',
+      };
+
+  String get colSender => switch (locale) {
+        'ar' => 'المرسل',
+        'en' => 'SENDER',
+        _ => 'EXPÉDITEUR',
+      };
+
+  String get colDescription => switch (locale) {
+        'ar' => 'وصف المنتج',
+        'en' => 'PRODUCT DESCRIPTION',
+        _ => 'DESCRIPTION DU PRODUIT',
+      };
+
+  String get colNote => switch (locale) {
+        'ar' => 'ملاحظة',
+        'en' => 'NOTE',
+        _ => 'NOTE',
       };
 
   String get colRecipient => switch (locale) {
@@ -732,6 +914,12 @@ class AppStrings {
         'ar' => 'طرد خارج الجولة',
         'en' => 'Out of route parcel',
         _ => 'Colis hors tournée',
+      };
+
+  String get scanAlreadyDelivered => switch (locale) {
+        'ar' => 'تم تسليم هذا الطرد مسبقاً',
+        'en' => 'Parcel already delivered',
+        _ => 'Colis déjà livré',
       };
 
   String get scanDetected => switch (locale) {
@@ -1610,9 +1798,9 @@ class AppStrings {
       };
 
   String get statsKpiFailed => switch (locale) {
-        'ar' => 'إخفاقات',
-        'en' => 'FAILURES',
-        _ => 'ÉCHECS',
+        'ar' => 'المرتجعات',
+        'en' => 'RETURNS',
+        _ => 'RETOURS',
       };
 
   String statsKpiCod(String currency) => switch (locale) {
@@ -1667,5 +1855,42 @@ class AppStrings {
         'ar' => 'بيانات مؤقتة · لا اتصال',
         'en' => 'Cached data · offline',
         _ => 'Données en cache · hors-ligne',
+      };
+
+  // Stats detail section — replaces the old "top failure reasons" table.
+  String get statsDetailTitle => switch (locale) {
+        'ar' => 'تفاصيل',
+        'en' => 'DETAILS',
+        _ => 'DÉTAILS',
+      };
+
+  String get statsDetailRescheduled => switch (locale) {
+        'ar' => 'مُعاد جدولتها',
+        'en' => 'Rescheduled',
+        _ => 'Reprogrammés',
+      };
+
+  String get statsDetailReturned => switch (locale) {
+        'ar' => 'مرتجع نهائي',
+        'en' => 'Definitive returns',
+        _ => 'Retours définitifs',
+      };
+
+  String get statsDetailPickups => switch (locale) {
+        'ar' => 'الإحضارات',
+        'en' => 'Pickups collected',
+        _ => 'Enlèvements effectués',
+      };
+
+  String get statsDetailRunsheets => switch (locale) {
+        'ar' => 'فيتورات مُغلقة',
+        'en' => 'Runsheets closed',
+        _ => 'Runsheets clôturés',
+      };
+
+  String get statsDetailCalls => switch (locale) {
+        'ar' => 'مكالمات',
+        'en' => 'Calls made',
+        _ => 'Appels passés',
       };
 }

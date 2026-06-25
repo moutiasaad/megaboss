@@ -17,6 +17,7 @@ import '../../../../core/widgets/mb_state_view.dart';
 import '../../../../core/widgets/mb_stat_pill.dart';
 import '../../../../core/widgets/mb_tri_progress.dart';
 import '../../../../core/widgets/section_label.dart';
+import '../../../notifications/presentation/controllers/notifications_controller.dart';
 import '../../data/models/dashboard_data.dart';
 import '../controllers/dashboard_controller.dart';
 
@@ -68,6 +69,12 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
     final s = AppStrings.of(locale.languageCode);
     final dashAsync = ref.watch(dashboardProvider);
     final pendingOps = ref.watch(pendingOpsCountProvider).valueOrNull ?? 0;
+    // Warm the motifs cache on Home so the return / refuse sheets open with a
+    // fully populated dropdown on the first try.
+    ref.watch(motifsProvider);
+    // Bell badge — backed by GET /driver/notifications/unread-count, with a
+    // cached fallback so the badge survives offline / API errors.
+    final unread = ref.watch(unreadNotifCountProvider).valueOrNull ?? 0;
 
     return Column(
       children: [
@@ -77,20 +84,28 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
             driverName: data.driver.name,
             isAvailable: data.driver.isAvailable,
             pendingSyncOps: pendingOps,
+            unreadNotifications: unread,
             strings: s,
-            onBell: () => context.push('/dashboard/notifications'),
+            onBell: () async {
+              await context.push('/dashboard/notifications');
+              if (!mounted) return;
+              // Returning from the inbox — refresh the badge count.
+              ref.invalidate(unreadNotifCountProvider);
+            },
             onSyncTap: () => context.push('/settings'),
           ),
           loading: () => MbAppHeader(
             driverName: '...',
             isAvailable: true,
             pendingSyncOps: 0,
+            unreadNotifications: unread,
             strings: s,
           ),
           error: (_, __) => MbAppHeader(
             driverName: '—',
             isAvailable: false,
             pendingSyncOps: 0,
+            unreadNotifications: unread,
             strings: s,
           ),
         ),
@@ -156,7 +171,17 @@ class _DashboardBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hasContent = data.activeRunsheet != null || data.activePickup != null;
+    // Show the active runsheet/pickup only when it has colis AND there are
+    // still some to action. Once everything has been delivered/returned (or
+    // collected/refused) the driver just needs to close it — no point taking
+    // Home screen real estate.
+    final showRunsheet = data.activeRunsheet != null &&
+        data.activeRunsheet!.total > 0 &&
+        data.activeRunsheet!.remaining > 0;
+    final showPickup = data.activePickup != null &&
+        data.activePickup!.totalShipments > 0 &&
+        data.activePickup!.pendingCount > 0;
+    final hasContent = showRunsheet || showPickup;
 
     // Stagger delay: 60 ms per card visible on screen.
     int d = 0;
@@ -178,7 +203,7 @@ class _DashboardBody extends StatelessWidget {
         ],
 
         // ── Active runsheet ──────────────────────────────────────────────
-        if (data.activeRunsheet != null) ...[
+        if (showRunsheet) ...[
           const SizedBox(height: 13),
           SectionLabel(strings.dashSectionRunsheet),
           _AnimatedCard(
@@ -191,7 +216,7 @@ class _DashboardBody extends StatelessWidget {
         ],
 
         // ── Active pickup ────────────────────────────────────────────────
-        if (data.activePickup != null) ...[
+        if (showPickup) ...[
           const SizedBox(height: 13),
           SectionLabel(strings.dashSectionPickup),
           _AnimatedCard(
@@ -232,6 +257,9 @@ class _RunsheetCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Active runsheet → blue accent + blue chip. Switches to red only when the
+    // runsheet has been open for 24h+ (overdue), mirroring the list screen.
+    final accent = summary.isOverdue ? mbRed : mbBlue;
     return Semantics(
       label: '${strings.dashSectionRunsheet} RS-${summary.id}, '
           '${summary.label}, '
@@ -239,15 +267,17 @@ class _RunsheetCard extends StatelessWidget {
           '${summary.failed} ${strings.dashFailed}, '
           '${summary.remaining} ${strings.dashRemaining}',
       child: MbCard(
-        accentColor: mbRed,
-        onTap: () => context.go('/runsheets'),
+        accentColor: accent,
+        onTap: () => context.go('/runsheets/${summary.id}'),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // Header: chip · title · colis count
             Row(
               children: [
-                MbChip.red(label: 'RS-${summary.id}'),
+                summary.isOverdue
+                    ? MbChip.red(label: 'RS-${summary.id}')
+                    : MbChip.blue(label: 'RS-${summary.id}'),
                 const SizedBox(width: 9),
                 Expanded(
                   child: Text(
@@ -307,7 +337,7 @@ class _RunsheetCard extends StatelessWidget {
 
             // CTA button
             OutlinedButton(
-              onPressed: () => context.go('/runsheets'),
+              onPressed: () => context.go('/runsheets/${summary.id}'),
               style: _kGhostButtonStyle,
               child: Text(strings.dashViewRunsheet),
             ),
@@ -352,10 +382,10 @@ class _PickupCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
 
-          // Sub-line: "{n} colis à collecter · {zone}"
+          // Sub-line: "{collected}/{total} collectés · {zone}"
           Text(
             [
-              '${summary.pendingCount} ${strings.dashToCollect}',
+              strings.pkdCollected(summary.collectedCount, summary.totalShipments),
               if (summary.zone != null) summary.zone!,
             ].join(' · '),
             style: GoogleFonts.hankenGrotesk(

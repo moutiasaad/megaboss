@@ -324,14 +324,31 @@ class _RunsheetRowState extends State<_RunsheetRow>
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final rs = widget.runsheet;
-    final isActive = rs.isActive;
+    final isInProgress = rs.status == RunsheetStatus.inProgress;
+    // Server still says `in_progress` but every colis is done — driver just
+    // needs to tap Clôturer. Treat it visually as a terminal state.
+    final isDoneNotClosed =
+        isInProgress && rs.totalShipments > 0 && rs.pendingCount == 0;
+    final isActiveActionable = isInProgress && !isDoneNotClosed;
+    // In-progress runsheet that's been open for 24h+ is flagged overdue → red.
+    // Done-not-closed never goes red — there's nothing to do but close it.
+    final isOverdue = isActiveActionable &&
+        rs.createdAt != null &&
+        DateTime.now().difference(rs.createdAt!).inHours >= 24;
+    final accentColor =
+        isOverdue ? mbRed : (isActiveActionable ? mbBlue : null);
 
-    final statusLabel = switch (rs.status) {
-      RunsheetStatus.inProgress => widget.strings.rsStatusInProgress,
-      RunsheetStatus.closed => widget.strings.rsStatusClosed,
-      RunsheetStatus.cancelled => widget.strings.rsStatusCancelled,
-      _ => widget.strings.rsStatusUpcoming,
-    };
+    final statusLabel = isDoneNotClosed
+        ? widget.strings.rsStatusCompleted
+        : switch (rs.status) {
+            RunsheetStatus.inProgress => widget.strings.rsStatusInProgress,
+            RunsheetStatus.closed => widget.strings.rsStatusClosed,
+            RunsheetStatus.cancelled => widget.strings.rsStatusCancelled,
+            _ => widget.strings.rsStatusUpcoming,
+          };
+    // Pass the closed status to the badge so it picks up the green ok styling.
+    final badgeStatus =
+        isDoneNotClosed ? RunsheetStatus.closed : rs.status;
 
     final title = rs.name.isNotEmpty && rs.name != rs.label ? rs.name : null;
 
@@ -351,7 +368,7 @@ class _RunsheetRowState extends State<_RunsheetRow>
               )}',
           button: true,
           child: MbCard(
-            accentColor: isActive ? mbRed : null,
+            accentColor: accentColor,
             onTap: widget.onTap,
             padding: const EdgeInsets.all(MbSpacing.md2),
             child: Column(
@@ -361,8 +378,10 @@ class _RunsheetRowState extends State<_RunsheetRow>
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    if (isActive)
+                    if (isOverdue)
                       MbChip.red(label: rs.label)
+                    else if (isActiveActionable)
+                      MbChip.blue(label: rs.label)
                     else
                       _NeutralChip(label: rs.label, isDark: isDark),
                     if (title != null) ...[
@@ -380,7 +399,7 @@ class _RunsheetRowState extends State<_RunsheetRow>
                     ] else
                       const Spacer(),
                     const SizedBox(width: 8),
-                    MbStatusBadge(status: rs.status, label: statusLabel),
+                    MbStatusBadge(status: badgeStatus, label: statusLabel),
                   ],
                 ),
 

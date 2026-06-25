@@ -30,6 +30,7 @@ class PickupDetailController
   }
 
   Future<void> accept(int shipmentId) async {
+    final previous = state.valueOrNull;
     _applyShipmentUpdate(
       shipmentId,
       PickupShipmentStatus.collected,
@@ -38,11 +39,13 @@ class PickupDetailController
     try {
       await ref.read(pickupRepositoryProvider).accept(arg, shipmentId);
     } catch (_) {
-      ref.invalidateSelf();
+      if (previous != null) state = AsyncData(previous);
+      rethrow;
     }
   }
 
   Future<void> refuse(int shipmentId, {required String reason}) async {
+    final previous = state.valueOrNull;
     _applyShipmentUpdate(
       shipmentId,
       PickupShipmentStatus.refused,
@@ -53,7 +56,8 @@ class PickupDetailController
           .read(pickupRepositoryProvider)
           .refuse(arg, shipmentId, comment: reason);
     } catch (_) {
-      ref.invalidateSelf();
+      if (previous != null) state = AsyncData(previous);
+      rethrow;
     }
   }
 

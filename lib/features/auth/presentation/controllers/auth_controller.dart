@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/models/driver_model.dart';
 import '../../../../core/network/providers.dart';
@@ -18,6 +20,12 @@ class AuthController extends AsyncNotifier<DriverModel?> {
         // Ignore — cached profile is still valid.
       }
     });
+    // Cold-start FCM registration so the server has the current device token
+    // even when the driver doesn't re-login (e.g. after a Firebase config
+    // change rotates the token). Fire-and-forget — never blocks startup.
+    Future.microtask(
+      () => ref.read(fcmRegistrationServiceProvider).register(),
+    );
     return cached;
   }
 
@@ -36,6 +44,9 @@ class AuthController extends AsyncNotifier<DriverModel?> {
       state = AsyncData(driver);
       // Start offline sync listener.
       ref.read(syncPushServiceProvider).start();
+      // Register the FCM token with the server. Service is idempotent and
+      // self-subscribes to onTokenRefresh.
+      unawaited(ref.read(fcmRegistrationServiceProvider).register());
       return true;
     } catch (e, st) {
       state = AsyncError(e, st);
@@ -45,6 +56,7 @@ class AuthController extends AsyncNotifier<DriverModel?> {
 
   Future<void> logout() async {
     try {
+      await ref.read(fcmRegistrationServiceProvider).stop();
       await ref.read(authRepositoryProvider).logout();
     } finally {
       state = const AsyncData(null);

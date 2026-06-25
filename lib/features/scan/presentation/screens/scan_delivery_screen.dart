@@ -11,6 +11,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../../../../core/i18n/app_strings.dart';
 import '../../../../core/network/providers.dart';
 import '../../../../core/providers/locale_provider.dart';
+import '../../../../core/services/scan_beep_service.dart';
 import '../../../../core/theme/colors.dart';
 import '../../../runsheets/data/models/runsheet_model.dart';
 import '../../../shipments/data/models/shipment_model.dart';
@@ -215,6 +216,20 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
       return;
     }
 
+    // Block re-scan if the parcel has already been delivered. The driver
+    // should not be able to re-confirm a delivery; the shipment is terminal.
+    if (shipment.status == ShipmentStatus.delivered) {
+      setState(() => _isValidating = false);
+      _pillCtrl.reverse();
+      if (!_reduceMotion) _lineCtrl.repeat(reverse: true);
+      _lastDetect = null;
+      _camera.start();
+      _alreadyDeliveredFeedback();
+      return;
+    }
+
+    unawaited(ScanBeepService.instance.playSuccess());
+
     setState(() {
       _isValidating = false;
       _detected = shipment;
@@ -309,17 +324,30 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
 
   void _errorFeedback() {
     HapticFeedback.vibrate();
+    unawaited(ScanBeepService.instance.playError());
     // Spec: pastille ROUGE « Colis hors tournée » — show briefly as SnackBar
     final locale = ref.read(localeProvider).languageCode;
     final s = AppStrings.of(locale);
+    _showRejectToast(s.scanOutOfRoute, mbErr);
+  }
+
+  void _alreadyDeliveredFeedback() {
+    HapticFeedback.vibrate();
+    unawaited(ScanBeepService.instance.playError());
+    final locale = ref.read(localeProvider).languageCode;
+    final s = AppStrings.of(locale);
+    _showRejectToast(s.scanAlreadyDelivered, mbWarn);
+  }
+
+  void _showRejectToast(String message, Color color) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          s.scanOutOfRoute,
+          message,
           style: GoogleFonts.archivo(
               color: Colors.white, fontWeight: FontWeight.w600),
         ),
-        backgroundColor: mbErr,
+        backgroundColor: color,
         behavior: SnackBarBehavior.floating,
         shape:
             RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
@@ -350,13 +378,9 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
         shipment: shipment,
         strings: s,
         isOffline: !_isOnline,
-        onDeliver: () {
+        onDeliver: (double codAmount) {
           Navigator.of(ctx).pop();
-          unawaited(_doDeliver(shipment));
-        },
-        onFail: () {
-          Navigator.of(ctx).pop();
-          unawaited(_doFail(shipment));
+          unawaited(_doDeliver(shipment, codAmount: codAmount));
         },
         onBack: () => Navigator.of(ctx).pop(),
       ),
@@ -378,43 +402,17 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
     _camera.start();
   }
 
-  Future<void> _doDeliver(ShipmentModel shipment) async {
+  // Single-sheet flow: the confirmation sheet collects the COD amount itself
+  // and submits directly. Online → POST and pop; offline → queue + orange pill.
+  Future<void> _doDeliver(
+    ShipmentModel shipment, {
+    required double codAmount,
+  }) async {
     if (_isOnline) {
-      // Online: show COD confirmation sheet (Image #19)
-      await _showConfirmDeliverySheet(shipment);
+      await _submitDelivery(shipment, codAmount: codAmount);
     } else {
-      // Offline: queue immediately, show orange pill
-      await _queueDeliveryOffline(shipment);
+      await _queueDeliveryOffline(shipment, codAmount: codAmount);
     }
-  }
-
-  Future<void> _showConfirmDeliverySheet(ShipmentModel shipment) async {
-    if (!mounted) return;
-    setState(() => _sheetOpen = true);
-    _camera.stop();
-
-    final locale = ref.read(localeProvider).languageCode;
-    final s = AppStrings.of(locale);
-
-    await showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      barrierColor: Colors.black.withAlpha(0x66),
-      isDismissible: true,
-      isScrollControlled: true,
-      useRootNavigator: true,
-      builder: (ctx) => _ConfirmDeliverySheet(
-        shipment: shipment,
-        strings: s,
-        onConfirm: (double codAmount) async {
-          Navigator.of(ctx).pop();
-          await _submitDelivery(shipment, codAmount: codAmount);
-        },
-        onCancel: () => Navigator.of(ctx).pop(),
-      ),
-    );
-
-    _resumeScan();
   }
 
   Future<void> _submitDelivery(
@@ -440,7 +438,10 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
     if (mounted && Navigator.of(context).canPop()) Navigator.of(context).pop();
   }
 
-  Future<void> _queueDeliveryOffline(ShipmentModel shipment) async {
+  Future<void> _queueDeliveryOffline(
+    ShipmentModel shipment, {
+    required double codAmount,
+  }) async {
     _isSubmitting = true;
     final locale = ref.read(localeProvider).languageCode;
     final s = AppStrings.of(locale);
@@ -451,7 +452,7 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
       barcode:
           shipment.barcode.isNotEmpty ? shipment.barcode : shipment.trackingNumber,
       status: ShipmentStatus.delivered,
-      codCollected: shipment.hasCod,
+      codCollected: codAmount > 0,
       shipmentId: shipment.id != 0 ? shipment.id : null,
     );
 
@@ -472,48 +473,6 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
     }
   }
 
-  Future<void> _doFail(ShipmentModel shipment) async {
-    // Block _resumeScan while the fail sheet is open (runs concurrently with _openSheet)
-    _blockResume = true;
-    if (mounted) setState(() => _failTracking = shipment.trackingNumber);
-
-    final locale = ref.read(localeProvider).languageCode;
-    final s = AppStrings.of(locale);
-
-    final result = await showModalBottomSheet<({String reason, String? comment})>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      barrierColor: Colors.black.withAlpha(0x66),
-      isScrollControlled: true,
-      useRootNavigator: true,
-      builder: (ctx) => _FailReasonSheet(shipment: shipment, strings: s),
-    );
-
-    if (!mounted) return;
-    setState(() => _failTracking = null);
-    _blockResume = false;
-
-    if (result == null) {
-      _resumeScan();
-      return;
-    }
-
-    _isSubmitting = true;
-    final scanRepo = ref.read(scanRepositoryProvider);
-    final apiResult = await scanRepo.scanDelivery(
-      barcode:
-          shipment.barcode.isNotEmpty ? shipment.barcode : shipment.trackingNumber,
-      status: ShipmentStatus.failed,
-      returnType: result.reason,
-      comment: result.comment,
-      shipmentId: shipment.id != 0 ? shipment.id : null,
-    );
-
-    if (!mounted) return;
-    if (apiResult == null) _showToast(s.scanToastQueued, mbWarn);
-    await Future.delayed(const Duration(milliseconds: 300));
-    if (mounted && Navigator.of(context).canPop()) Navigator.of(context).pop();
-  }
 
   void _showToast(String message, Color color) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -565,6 +524,12 @@ class _ScanDeliveryScreenState extends ConsumerState<ScanDeliveryScreen>
       fit: StackFit.expand,
       children: [
         // (B) Camera feed
+        // NOTE: scanWindow is intentionally NOT set here. mobile_scanner 6.0
+        // misinterprets the rect when combined with BoxFit.cover and blocks
+        // all detection. The visible _ScanFrame stays as a UI hint, and the
+        // _lookupBarcode pre-filter rejects barcodes that aren't in the
+        // runsheet — so out-of-route scans are still blocked at validation
+        // time, just without the camera-level rect.
         MobileScanner(
           controller: _camera,
           onDetect: _onDetect,
@@ -823,7 +788,8 @@ class _ScanFrame extends StatelessWidget {
   final bool reduceMotion;
   final AppStrings strings;
 
-  static const _size = 198.0;
+  // Enlarged from 198 to 260 so wider barcodes fit inside the reserved zone.
+  static const _size = 260.0;
 
   @override
   Widget build(BuildContext context) {
@@ -1179,26 +1145,59 @@ class _OfflineBanner extends StatelessWidget {
 }
 
 // ── Confirmation sheet ────────────────────────────────────────────────────────
+//
+// Single-sheet flow: the driver scans, this sheet opens once, the COD field is
+// editable (when the shipment has COD), and tapping "Livré" submits directly —
+// no second confirmation. `onDeliver` receives the captured COD amount.
 
-class _ConfirmationSheet extends StatelessWidget {
+class _ConfirmationSheet extends StatefulWidget {
   const _ConfirmationSheet({
     required this.shipment,
     required this.strings,
     required this.isOffline,
     required this.onDeliver,
-    required this.onFail,
     required this.onBack,
   });
 
   final ShipmentModel shipment;
   final AppStrings strings;
   final bool isOffline;
-  final VoidCallback onDeliver;
-  final VoidCallback onFail;
+  final ValueChanged<double> onDeliver;
   final VoidCallback onBack;
 
   @override
+  State<_ConfirmationSheet> createState() => _ConfirmationSheetState();
+}
+
+class _ConfirmationSheetState extends State<_ConfirmationSheet> {
+  late final TextEditingController _codCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    final cod = widget.shipment.codAmount;
+    _codCtrl = TextEditingController(
+      text: cod != null && cod > 0 ? cod.toStringAsFixed(0) : '',
+    );
+  }
+
+  @override
+  void dispose() {
+    _codCtrl.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final amount = double.tryParse(_codCtrl.text.trim()) ?? 0;
+    widget.onDeliver(amount);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final shipment = widget.shipment;
+    final strings = widget.strings;
+    final isOffline = widget.isOffline;
+    final onBack = widget.onBack;
     final bottom = MediaQuery.paddingOf(context).bottom;
     final s = strings;
     final known = shipment.id != 0;
@@ -1366,7 +1365,7 @@ class _ConfirmationSheet extends StatelessWidget {
                   ),
                 ],
 
-                // ── COD card ──────────────────────────────────────────────────
+                // ── COD editable card ─────────────────────────────────────────
                 if (shipment.hasCod) ...[
                   const SizedBox(height: 10),
                   Container(
@@ -1376,30 +1375,66 @@ class _ConfirmationSheet extends StatelessWidget {
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(color: Color(0x33004E95), width: 1),
                     ),
-                    child: Row(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Container(
-                          padding: const EdgeInsets.all(7),
-                          decoration: BoxDecoration(
-                            color: Color(0x22004E95),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: const Icon(Icons.payments_outlined, size: 16, color: mbBlue),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            s.scanCodLabel,
-                            style: GoogleFonts.archivo(
-                              fontSize: 10.5, fontWeight: FontWeight.w700,
-                              letterSpacing: 0.4, color: mbBlue,
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(7),
+                              decoration: BoxDecoration(
+                                color: Color(0x22004E95),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Icon(Icons.payments_outlined,
+                                  size: 16, color: mbBlue),
                             ),
-                          ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                s.scanCodCollected,
+                                style: GoogleFonts.archivo(
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 0.4,
+                                  color: mbBlue,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
-                        Text(
-                          '${shipment.codAmount!.toStringAsFixed(0)} TND',
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: _codCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(
+                              decimal: true),
                           style: GoogleFonts.archivo(
-                            fontSize: 22, fontWeight: FontWeight.w800, color: mbBlue,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                            color: mbBlue,
+                          ),
+                          decoration: InputDecoration(
+                            isDense: true,
+                            filled: true,
+                            fillColor: mbSurface,
+                            suffixText: 'TND',
+                            suffixStyle: GoogleFonts.archivo(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: mbBlue,
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              borderSide: const BorderSide(
+                                  color: mbLine, width: 1.5),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              borderSide: const BorderSide(
+                                  color: mbBlue, width: 1.5),
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 12),
                           ),
                         ),
                       ],
@@ -1441,14 +1476,14 @@ class _ConfirmationSheet extends StatelessWidget {
                   width: double.infinity,
                   height: 52,
                   child: FilledButton.icon(
-                    onPressed: onDeliver,
+                    onPressed: _submit,
                     style: FilledButton.styleFrom(
                       backgroundColor: mbOk,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                     ),
                     icon: const Icon(Icons.check_rounded, size: 18),
                     label: Text(
-                      s.scanDelivered,
+                      s.scanConfirmDelivery,
                       style: GoogleFonts.archivo(
                         fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white,
                       ),
@@ -1458,662 +1493,28 @@ class _ConfirmationSheet extends StatelessWidget {
 
                 const SizedBox(height: 9),
 
-                // ── Secondary: Échec + Retour ─────────────────────────────────
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 3,
-                      child: SizedBox(
-                        height: 46,
-                        child: OutlinedButton.icon(
-                          onPressed: onFail,
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: mbErr,
-                            side: const BorderSide(color: mbErr, width: 1.5),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          ),
-                          icon: const Icon(Icons.close_rounded, size: 16),
-                          label: Text(
-                            s.scanFailed,
-                            style: GoogleFonts.archivo(fontSize: 13.5, fontWeight: FontWeight.w700),
-                          ),
-                        ),
-                      ),
+                // ── Back ───────────────────────────────────────────────────────
+                SizedBox(
+                  width: double.infinity,
+                  height: 46,
+                  child: TextButton.icon(
+                    onPressed: onBack,
+                    style: TextButton.styleFrom(
+                      foregroundColor: mbInk2,
+                      backgroundColor: mbSurface3,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
-                    const SizedBox(width: 9),
-                    Expanded(
-                      flex: 2,
-                      child: SizedBox(
-                        height: 46,
-                        child: TextButton.icon(
-                          onPressed: onBack,
-                          style: TextButton.styleFrom(
-                            foregroundColor: mbInk2,
-                            backgroundColor: mbSurface3,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          ),
-                          icon: const Icon(Icons.arrow_back_rounded, size: 16),
-                          label: Text(
-                            s.scanBack,
-                            style: GoogleFonts.archivo(fontSize: 13.5, fontWeight: FontWeight.w700),
-                          ),
-                        ),
-                      ),
+                    icon: const Icon(Icons.arrow_back_rounded, size: 16),
+                    label: Text(
+                      s.scanBack,
+                      style: GoogleFonts.archivo(fontSize: 13.5, fontWeight: FontWeight.w700),
                     ),
-                  ],
+                  ),
                 ),
               ],
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-// ── Confirm delivery sheet (online · Image #19) ───────────────────────────────
-
-class _ConfirmDeliverySheet extends StatefulWidget {
-  const _ConfirmDeliverySheet({
-    required this.shipment,
-    required this.strings,
-    required this.onConfirm,
-    required this.onCancel,
-  });
-
-  final ShipmentModel shipment;
-  final AppStrings strings;
-  final void Function(double codAmount) onConfirm;
-  final VoidCallback onCancel;
-
-  @override
-  State<_ConfirmDeliverySheet> createState() => _ConfirmDeliverySheetState();
-}
-
-class _ConfirmDeliverySheetState extends State<_ConfirmDeliverySheet> {
-  late final TextEditingController _codCtrl;
-
-  @override
-  void initState() {
-    super.initState();
-    final cod = widget.shipment.codAmount;
-    _codCtrl = TextEditingController(
-      text: cod != null && cod > 0 ? cod.toStringAsFixed(0) : '',
-    );
-  }
-
-  @override
-  void dispose() {
-    _codCtrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final s = widget.strings;
-    final shipment = widget.shipment;
-    final bottom = MediaQuery.paddingOf(context).bottom;
-
-    return Container(
-      decoration: const BoxDecoration(
-        color: mbSurface,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
-        boxShadow: [
-          BoxShadow(
-            color: Color(0x28000000),
-            blurRadius: 24,
-            offset: Offset(0, -4),
-          ),
-        ],
-      ),
-      child: SingleChildScrollView(
-        padding: EdgeInsets.fromLTRB(16, 0, 16, 18 + bottom),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Grab handle
-            const SizedBox(height: 8),
-            Center(
-              child: Container(
-                width: 38,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: mbLine,
-                  borderRadius: BorderRadius.circular(3),
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-
-            // Header: thumbnail + name/address + "Livré" badge
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 52,
-                  height: 52,
-                  decoration: BoxDecoration(
-                    color: mbSurface3,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: const Icon(
-                    Icons.inventory_2_outlined,
-                    color: mbInk3,
-                    size: 26,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        shipment.recipientName,
-                        style: GoogleFonts.archivo(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                          color: mbInk,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        shipment.governorate != null
-                            ? '${shipment.address} · ${shipment.city}, ${shipment.governorate}'
-                            : '${shipment.address} · ${shipment.city}',
-                        style: GoogleFonts.hankenGrotesk(
-                          fontSize: 11.5,
-                          color: mbInk2,
-                          height: 1.35,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 8),
-                // "● Livré" status badge
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: mbOkBg,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 6,
-                        height: 6,
-                        decoration: const BoxDecoration(
-                          color: mbOk,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      const SizedBox(width: 5),
-                      Text(
-                        s.scanDelivered,
-                        style: GoogleFonts.archivo(
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.w700,
-                          color: mbOk,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 12),
-
-            // Tracking chip
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-              decoration: BoxDecoration(
-                color: mbSurface3,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                shipment.trackingNumber,
-                style: GoogleFonts.splineSansMono(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: mbInk2,
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 16),
-
-            // COD amount input (only if hasCod)
-            if (shipment.hasCod) ...[
-              Text(
-                s.scanCodCollected,
-                style: GoogleFonts.archivo(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.33,
-                  color: mbBlue,
-                ),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _codCtrl,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                style: GoogleFonts.archivo(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w800,
-                  color: mbBlue,
-                ),
-                decoration: InputDecoration(
-                  suffixText: 'TND',
-                  suffixStyle: GoogleFonts.archivo(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: mbBlue,
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide:
-                        const BorderSide(color: mbLine, width: 1.5),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide:
-                        const BorderSide(color: mbBlue, width: 1.5),
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 14),
-                ),
-              ),
-              const SizedBox(height: 16),
-            ] else
-              const SizedBox(height: 4),
-
-            // "✓ Confirmer la livraison" green button
-            SizedBox(
-              width: double.infinity,
-              height: 52,
-              child: FilledButton.icon(
-                onPressed: () {
-                  final amount =
-                      double.tryParse(_codCtrl.text.trim()) ?? 0;
-                  widget.onConfirm(amount);
-                },
-                style: FilledButton.styleFrom(
-                  backgroundColor: mbOk,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-                icon: const Icon(Icons.check, size: 18),
-                label: Text(
-                  s.scanConfirmDelivery,
-                  style: GoogleFonts.archivo(
-                    fontSize: 14.5,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 10),
-
-            // "Annuler" outlined button
-            SizedBox(
-              width: double.infinity,
-              height: 48,
-              child: OutlinedButton(
-                onPressed: widget.onCancel,
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: mbInk,
-                  side: const BorderSide(color: mbLine, width: 1.5),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-                child: Text(
-                  s.scanCancel,
-                  style: GoogleFonts.archivo(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: mbInk,
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ── Fail reason sheet (Image #21) ─────────────────────────────────────────────
-
-class _FailReasonSheet extends StatefulWidget {
-  const _FailReasonSheet({
-    required this.shipment,
-    required this.strings,
-  });
-  final ShipmentModel shipment;
-  final AppStrings strings;
-
-  @override
-  State<_FailReasonSheet> createState() => _FailReasonSheetState();
-}
-
-class _FailReasonSheetState extends State<_FailReasonSheet> {
-  String? _selected;
-  late final TextEditingController _commentCtrl;
-
-  @override
-  void initState() {
-    super.initState();
-    _commentCtrl = TextEditingController();
-  }
-
-  @override
-  void dispose() {
-    _commentCtrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final s = widget.strings;
-    final shipment = widget.shipment;
-    final bottom = MediaQuery.paddingOf(context).bottom;
-
-    // Image #21 reason order: absent, refused, wrong address, unreachable, rescheduled
-    final reasons = [
-      (s.scanReasonAbsent,      'absent'),
-      (s.scanReasonRefused,     'refused'),
-      (s.scanReasonWrongAddress,'wrong_address'),
-      (s.scanReasonUnreachable, 'unreachable'),
-      (s.scanReasonRescheduled, 'rescheduled'),
-    ];
-
-    return GestureDetector(
-      onTap: () => FocusScope.of(context).unfocus(),
-      child: Container(
-        decoration: const BoxDecoration(
-          color: mbSurface,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
-          boxShadow: [
-            BoxShadow(
-              color: Color(0x28000000),
-              blurRadius: 24,
-              offset: Offset(0, -4),
-            ),
-          ],
-        ),
-        child: SingleChildScrollView(
-          padding: EdgeInsets.fromLTRB(16, 0, 16, 18 + bottom),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Grab handle
-              const SizedBox(height: 8),
-              Center(
-                child: Container(
-                  width: 38,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: mbLine,
-                    borderRadius: BorderRadius.circular(3),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              // Shipment header: thumbnail + name + "Échec" badge + address
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    width: 52,
-                    height: 52,
-                    decoration: BoxDecoration(
-                      color: mbSurface3,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Icon(
-                      Icons.inventory_2_outlined,
-                      color: mbInk3,
-                      size: 26,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          shipment.recipientName,
-                          style: GoogleFonts.archivo(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                            color: mbInk,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          '${shipment.address} · ${shipment.city}',
-                          style: GoogleFonts.hankenGrotesk(
-                            fontSize: 11.5,
-                            color: mbInk2,
-                            height: 1.35,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  // "● Échec" red status badge
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 9, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: mbErrBg,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          width: 6,
-                          height: 6,
-                          decoration: const BoxDecoration(
-                            color: mbErr,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                        const SizedBox(width: 5),
-                        Text(
-                          s.scanFailed,
-                          style: GoogleFonts.archivo(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w700,
-                            color: mbErr,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 18),
-
-              // "RAISON DE L'ÉCHEC" section label
-              Text(
-                s.scanReasonTitle,
-                style: GoogleFonts.archivo(
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.5,
-                  color: mbInk3,
-                ),
-              ),
-              const SizedBox(height: 8),
-
-              // Reason tiles — card style with border
-              ...reasons.map((r) => _ReasonTile(
-                    label: r.$1,
-                    value: r.$2,
-                    selected: _selected == r.$2,
-                    onTap: () => setState(() => _selected = r.$2),
-                  )),
-
-              const SizedBox(height: 16),
-
-              // "COMMENTAIRE (OPTIONNEL)" section label
-              Text(
-                s.scanReasonComment,
-                style: GoogleFonts.archivo(
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.5,
-                  color: mbInk3,
-                ),
-              ),
-              const SizedBox(height: 8),
-
-              // Comment field
-              TextField(
-                controller: _commentCtrl,
-                maxLines: 3,
-                minLines: 2,
-                style: GoogleFonts.hankenGrotesk(
-                    fontSize: 13.5, color: mbInk),
-                decoration: InputDecoration(
-                  hintText: s.scanReasonCommentHint,
-                  hintStyle: GoogleFonts.hankenGrotesk(
-                      fontSize: 13.5, color: mbInk3),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide:
-                        const BorderSide(color: mbLine, width: 1.5),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide:
-                        const BorderSide(color: mbBlue, width: 1.5),
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 12),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // "✕ Confirmer l'échec" red confirm button
-              SizedBox(
-                width: double.infinity,
-                height: 52,
-                child: FilledButton.icon(
-                  onPressed: _selected != null
-                      ? () {
-                          final comment =
-                              _commentCtrl.text.trim().isEmpty
-                                  ? null
-                                  : _commentCtrl.text.trim();
-                          Navigator.of(context).pop(
-                            (reason: _selected!, comment: comment),
-                          );
-                        }
-                      : null,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: mbRed,
-                    disabledBackgroundColor: mbLine2,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                  ),
-                  icon: const Icon(Icons.close, size: 18,
-                      color: Colors.white),
-                  label: Text(
-                    s.scanConfirmFail,
-                    style: GoogleFonts.archivo(
-                      fontSize: 14.5,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ── Reason tile — card style with animated border (Image #21) ─────────────────
-
-class _ReasonTile extends StatelessWidget {
-  const _ReasonTile({
-    required this.label,
-    required this.value,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String label;
-  final String value;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        margin: const EdgeInsets.only(bottom: 8),
-        padding:
-            const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
-        decoration: BoxDecoration(
-          color: selected ? mbErrBg : mbSurface,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: selected ? mbRed : mbLine,
-            width: 1.5,
-          ),
-        ),
-        child: Row(
-          children: [
-            // Radio indicator
-            Container(
-              width: 20,
-              height: 20,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: selected ? mbRed : Colors.transparent,
-                border: selected
-                    ? null
-                    : Border.all(color: mbLine, width: 1.5),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                label,
-                style: GoogleFonts.hankenGrotesk(
-                  fontSize: 14,
-                  fontWeight:
-                      selected ? FontWeight.w600 : FontWeight.w400,
-                  color: mbInk,
-                ),
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }

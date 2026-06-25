@@ -7,9 +7,9 @@
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:1009072881450:android:f59af41acd8b1b2d906853",
+        "mobilesdk_app_id": "1:1009072881450:android:3d7d2979ba7603f0906853",
         "android_client_info": {
-          "package_name": "com.example.megaboss"
+          "package_name": "com.megaboss.store"
         }
       },
       "oauth_client": [],

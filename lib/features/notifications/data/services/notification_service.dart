@@ -1,48 +1,67 @@
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart';
 import '../../../../core/network/api_client.dart';
 import '../../../../core/network/endpoints.dart';
 import '../models/notif_entry.dart';
 
+// Raw API calls for the driver inbox.
+// Callers: NotificationRepository
 class NotificationService {
   const NotificationService(this._client);
   final ApiClient _client;
 
-  // GET /driver/notifications
-  Future<List<NotifEntry>> fetchAll() async {
+  // GET /driver/notifications?page=&per_page=&unread=
+  Future<NotifPage> fetchPage({
+    int page = 1,
+    int perPage = 20,
+    bool unreadOnly = false,
+  }) async {
     try {
-      final raw = await _client.get<dynamic>(Endpoints.notifications);
-      debugPrint('[NotifService.fetchAll] raw type=${raw.runtimeType} value=$raw');
-      // Handle: null → [], List → map directly, paginated Map → extract 'data'
-      final List<dynamic> list = switch (raw) {
-        null => [],
-        final List<dynamic> l => l,
-        final Map<dynamic, dynamic> m =>
-          (m['data'] ?? m['notifications'] ?? m['items'] ?? []) as List<dynamic>,
-        _ => [],
-      };
-      return list
-          .whereType<Map<String, dynamic>>()
-          .map(NotifEntry.fromJson)
-          .toList();
+      final raw = await _client.get<dynamic>(
+        Endpoints.notifications,
+        queryParameters: {
+          'page': page,
+          'per_page': perPage,
+          if (unreadOnly) 'unread': 1,
+        },
+      );
+      return NotifPage.fromJson(raw);
     } on DioException catch (e) {
       throw mapDioException(e);
     }
   }
 
-  // POST /driver/notifications/{id}/read
-  Future<void> markRead(int id) async {
+  // GET /driver/notifications/unread-count → { "unread": n }
+  Future<int> unreadCount() async {
     try {
-      await _client.dio.post<void>(Endpoints.notificationRead(id));
+      final raw = await _client.get<dynamic>(Endpoints.notificationsUnreadCount);
+      if (raw is Map<String, dynamic>) {
+        return raw['unread'] as int? ?? 0;
+      }
+      return 0;
     } on DioException catch (e) {
       throw mapDioException(e);
     }
   }
 
-  // POST /driver/notifications/read-all
-  Future<void> markAllRead() async {
+  // POST /driver/notifications/{id}/read → returns the updated notification.
+  Future<NotifEntry?> markRead(int id) async {
     try {
-      await _client.dio.post<void>(Endpoints.notificationsReadAll);
+      final raw = await _client.post<dynamic>(Endpoints.notificationRead(id));
+      if (raw is Map<String, dynamic>) return NotifEntry.fromJson(raw);
+      return null;
+    } on DioException catch (e) {
+      throw mapDioException(e);
+    }
+  }
+
+  // POST /driver/notifications/read-all → { "marked": n }
+  Future<int> markAllRead() async {
+    try {
+      final raw = await _client.post<dynamic>(Endpoints.notificationsReadAll);
+      if (raw is Map<String, dynamic>) {
+        return raw['marked'] as int? ?? 0;
+      }
+      return 0;
     } on DioException catch (e) {
       throw mapDioException(e);
     }

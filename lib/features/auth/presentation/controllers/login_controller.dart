@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -92,7 +91,9 @@ class LoginController extends Notifier<LoginState> {
       debugPrint('[LoginController] login success');
 
       ref.read(syncPushServiceProvider).start();
-      _registerFcmToken(); // fire-and-forget — never blocks the user
+      // Fire-and-forget — never blocks the user. The service is idempotent
+      // and self-subscribes to onTokenRefresh.
+      unawaited(ref.read(fcmRegistrationServiceProvider).register());
       state = const LoginState();
       return true;
     } on UnauthorizedException catch (e) {
@@ -109,25 +110,6 @@ class LoginController extends Notifier<LoginState> {
       _handleFailure(LoginErrorType.server);
     }
     return false;
-  }
-
-  Future<void> _registerFcmToken() async {
-    try {
-      final fcmToken = await ref.read(fcmServiceProvider).getToken();
-      if (fcmToken == null) return;
-
-      final info = await PackageInfo.fromPlatform();
-      final platform = Platform.isAndroid ? 'android' : 'ios';
-
-      await ref.read(authRepositoryProvider).registerDevice(
-            fcmToken: fcmToken,
-            platform: platform,
-            appVersion: info.version,
-          );
-      debugPrint('[LoginController] FCM device registered');
-    } catch (e) {
-      debugPrint('[LoginController] FCM registration failed (non-fatal): $e');
-    }
   }
 
   void _handleFailure(LoginErrorType errorType) {
@@ -176,45 +158,12 @@ class LoginController extends Notifier<LoginState> {
 final loginControllerProvider =
     NotifierProvider<LoginController, LoginState>(LoginController.new);
 
-// Version string — read once at startup.
+// Version string — read once at startup. Used by the login screen footer.
 final appVersionProvider = FutureProvider<String>((ref) async {
   try {
-    // package_info_plus returns the version from pubspec / store metadata.
-    // Import deferred to avoid requiring the plugin in tests.
-    final info = await _PackageInfo.fromPlatform();
+    final info = await PackageInfo.fromPlatform();
     return info.version;
   } catch (_) {
     return '1.0.0';
   }
 });
-
-// Thin wrapper to avoid importing package_info_plus everywhere.
-abstract class _PackageInfo {
-  static Future<({String version})> fromPlatform() async {
-    try {
-      // Dynamic import so the plugin isn't a hard dependency at compile time.
-      final pkg = await _loadPackageInfo();
-      return (version: pkg);
-    } catch (_) {
-      return (version: '1.0.0');
-    }
-  }
-
-  static Future<String> _loadPackageInfo() async {
-    // We call package_info_plus directly here. The try/catch in fromPlatform
-    // catches MissingPluginException on platforms where it isn't supported.
-    final result = await _invokePackageInfo();
-    return result;
-  }
-
-  static Future<String> _invokePackageInfo() async {
-    // Use a MethodChannel to stay decoupled; alternatively import the package.
-    const channel = MethodChannel('dev.fluttercommunity.plus/package_info');
-    try {
-      final map = await channel.invokeMethod<Map>('getAll');
-      return map?['version'] as String? ?? '1.0.0';
-    } catch (_) {
-      return '1.0.0';
-    }
-  }
-}

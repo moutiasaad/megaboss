@@ -95,25 +95,102 @@ class NotifEntry {
       };
 }
 
+// One page of /driver/notifications. The server returns Laravel pagination:
+//   { data: [...], current_page, last_page, per_page, total }
+// ApiClient strips the outer `data` envelope, so we parse what's left.
+class NotifPage {
+  const NotifPage({
+    required this.items,
+    required this.currentPage,
+    required this.lastPage,
+    required this.total,
+  });
+
+  final List<NotifEntry> items;
+  final int currentPage;
+  final int lastPage;
+  final int total;
+
+  bool get hasMore => currentPage < lastPage;
+
+  static const empty = NotifPage(
+    items: [],
+    currentPage: 1,
+    lastPage: 1,
+    total: 0,
+  );
+
+  factory NotifPage.fromJson(dynamic raw) {
+    if (raw is List) {
+      // Plain list (no pagination meta).
+      final items = raw
+          .whereType<Map<String, dynamic>>()
+          .map(NotifEntry.fromJson)
+          .toList();
+      return NotifPage(
+        items: items,
+        currentPage: 1,
+        lastPage: 1,
+        total: items.length,
+      );
+    }
+    if (raw is Map<String, dynamic>) {
+      // Laravel paginator-style payload.
+      final list = raw['data'] ??
+          raw['items'] ??
+          raw['notifications'] ??
+          const <dynamic>[];
+      final items = (list is List)
+          ? list
+              .whereType<Map<String, dynamic>>()
+              .map(NotifEntry.fromJson)
+              .toList()
+          : const <NotifEntry>[];
+      final meta = raw['meta'] as Map<String, dynamic>? ?? raw;
+      return NotifPage(
+        items: items,
+        currentPage: meta['current_page'] as int? ?? 1,
+        lastPage: meta['last_page'] as int? ?? 1,
+        total: meta['total'] as int? ?? items.length,
+      );
+    }
+    return empty;
+  }
+}
+
 class NotifState {
   const NotifState({
     required this.items,
     this.unread = 0,
     this.offline = false,
+    this.currentPage = 1,
+    this.lastPage = 1,
+    this.loadingMore = false,
   });
 
   final List<NotifEntry> items;
   final int unread;
   final bool offline;
+  final int currentPage;
+  final int lastPage;
+  final bool loadingMore;
+
+  bool get hasMore => currentPage < lastPage;
 
   NotifState copyWith({
     List<NotifEntry>? items,
     int? unread,
     bool? offline,
+    int? currentPage,
+    int? lastPage,
+    bool? loadingMore,
   }) =>
       NotifState(
         items: items ?? this.items,
         unread: unread ?? this.unread,
         offline: offline ?? this.offline,
+        currentPage: currentPage ?? this.currentPage,
+        lastPage: lastPage ?? this.lastPage,
+        loadingMore: loadingMore ?? this.loadingMore,
       );
 }

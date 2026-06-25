@@ -129,6 +129,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     setState(() => _isLoggingOut = true);
     try {
       final repo = ref.read(authRepositoryProvider);
+      await ref.read(fcmRegistrationServiceProvider).stop();
       await repo.unregisterDevice();
       await repo.logout();
       if (mounted) context.go('/login');

@@ -45,6 +45,13 @@ class ConflictException extends ApiException {
       : super(statusCode: 409);
 }
 
+// 429 — server-side rate limit (Laravel "Too Many Attempts")
+class RateLimitException extends ApiException {
+  const RateLimitException(
+      [super.message = 'Trop de requêtes. Réessayez dans un instant.'])
+      : super(statusCode: 429);
+}
+
 // 5xx — server-side error
 class ServerException extends ApiException {
   const ServerException([super.message = 'Erreur serveur.', int? code])

@@ -15,6 +15,7 @@ import '../../../../core/widgets/mb_fab.dart';
 import '../../../../core/widgets/mb_offline_banner.dart';
 import '../../../../core/widgets/mb_segmented.dart';
 import '../../../../core/widgets/mb_tri_progress.dart';
+import '../../../motifs/data/models/motif_model.dart';
 import '../../../shipments/data/models/shipment_model.dart';
 import '../../data/models/runsheet_model.dart';
 import '../controllers/runsheet_controller.dart';
@@ -24,6 +25,22 @@ const _kHeaderSub = Color(0xFFCFE0F1);
 const _kDonePreview = 5;
 
 enum _ShipFilter { all, pending, delivered, failed }
+enum _ShipSort { defaultOrder, city, name }
+enum _ReturnChoice { definitive, reschedule }
+
+class _ReturnSubmission {
+  const _ReturnSubmission({
+    required this.motif,
+    this.details,
+    this.rescheduleDate,
+  });
+  // The motif's `value` string from GET /driver/motifs — sent verbatim to the
+  // server in the comment payload so the web app and the mobile app stay
+  // aligned on the same canonical reasons.
+  final String motif;
+  final String? details;
+  final String? rescheduleDate; // ISO yyyy-MM-dd — only for reschedule
+}
 
 // ── Screen ────────────────────────────────────────────────────────────────────
 
@@ -39,6 +56,7 @@ class RunsheetDetailScreen extends ConsumerStatefulWidget {
 class _RunsheetDetailScreenState
     extends ConsumerState<RunsheetDetailScreen> {
   _ShipFilter _filter = _ShipFilter.all;
+  _ShipSort _sort = _ShipSort.defaultOrder;
   bool _showAllDone = false;
 
   // ── Partition helpers ──────────────────────────────────────────────────────
@@ -48,13 +66,15 @@ class _RunsheetDetailScreenState
       status != ShipmentStatus.failed &&
       status != ShipmentStatus.returned;
 
-  static List<ShipmentModel> _pendingOf(RunsheetModel rs) =>
-      ([...rs.shipments.where((s) => _isPending(s.status))]
-        ..sort((a, b) => a.id.compareTo(b.id)));
+  List<ShipmentModel> _pendingOf(RunsheetModel rs) => _applySort(
+        rs.shipments.where((s) => _isPending(s.status)).toList(),
+        pending: true,
+      );
 
-  static List<ShipmentModel> _allDoneOf(RunsheetModel rs) =>
-      ([...rs.shipments.where((s) => !_isPending(s.status))]
-        ..sort((a, b) => b.id.compareTo(a.id)));
+  List<ShipmentModel> _allDoneOf(RunsheetModel rs) => _applySort(
+        rs.shipments.where((s) => !_isPending(s.status)).toList(),
+        pending: false,
+      );
 
   List<ShipmentModel> _filteredDoneOf(RunsheetModel rs) {
     final all = _allDoneOf(rs);
@@ -65,6 +85,44 @@ class _RunsheetDetailScreenState
         all.where((s) => s.status != ShipmentStatus.delivered).toList(),
       _ => all,
     };
+  }
+
+  // Apply the current sort to a list of shipments.
+  // For `defaultOrder`: pending is id-ascending, done is id-descending — keeps
+  // the original "Prochain arrêt" ordering on the pending side and "most recent
+  // first" on the done side.
+  List<ShipmentModel> _applySort(
+    List<ShipmentModel> items, {
+    required bool pending,
+  }) {
+    final copy = [...items];
+    switch (_sort) {
+      case _ShipSort.defaultOrder:
+        copy.sort((a, b) =>
+            pending ? a.id.compareTo(b.id) : b.id.compareTo(a.id));
+      case _ShipSort.city:
+        copy.sort((a, b) {
+          final ka = _cityKey(a);
+          final kb = _cityKey(b);
+          final c = ka.compareTo(kb);
+          return c != 0 ? c : a.id.compareTo(b.id);
+        });
+      case _ShipSort.name:
+        copy.sort((a, b) {
+          final c = a.recipientName
+              .toLowerCase()
+              .compareTo(b.recipientName.toLowerCase());
+          return c != 0 ? c : a.id.compareTo(b.id);
+        });
+    }
+    return copy;
+  }
+
+  static String _cityKey(ShipmentModel s) {
+    final city = s.city.trim();
+    if (city.isNotEmpty) return city.toLowerCase();
+    final gov = (s.governorate ?? '').trim();
+    return gov.toLowerCase();
   }
 
   static double _codSumOf(List<ShipmentModel> items) =>
@@ -121,34 +179,46 @@ class _RunsheetDetailScreenState
                     .refresh(),
                 child: CustomScrollView(
                   slivers: [
-                    // (A) Sticky segmented filter
+                    // (A) Sticky segmented filter + sort button
                     SliverPersistentHeader(
                       pinned: true,
                       delegate: _FilterDelegate(
                         isDark: isDark,
                         height: 52,
                         child: Padding(
-                          padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
-                          child: MbSegmented<_ShipFilter>(
-                            items: [
-                              MbSegmentedItem(
-                                  value: _ShipFilter.all,
-                                  label: s.rsdFilterAll(total)),
-                              MbSegmentedItem(
-                                  value: _ShipFilter.pending,
-                                  label: s.rsdFilterPending(allPending.length)),
-                              MbSegmentedItem(
-                                  value: _ShipFilter.delivered,
-                                  label: s.rsdFilterDelivered(allDelivered)),
-                              MbSegmentedItem(
-                                  value: _ShipFilter.failed,
-                                  label: s.rsdFilterFailed(allFailed)),
+                          padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: MbSegmented<_ShipFilter>(
+                                  items: [
+                                    MbSegmentedItem(
+                                        value: _ShipFilter.all,
+                                        label: s.rsdFilterAll(total)),
+                                    MbSegmentedItem(
+                                        value: _ShipFilter.pending,
+                                        label: s.rsdFilterPending(
+                                            allPending.length)),
+                                    MbSegmentedItem(
+                                        value: _ShipFilter.delivered,
+                                        label: s.rsdFilterDelivered(
+                                            allDelivered)),
+                                    MbSegmentedItem(
+                                        value: _ShipFilter.failed,
+                                        label: s.rsdFilterFailed(allFailed)),
+                                  ],
+                                  selected: _filter,
+                                  onChanged: (f) => setState(() {
+                                    _filter = f;
+                                    _showAllDone = false;
+                                  }),
+                                ),
+                              ),
+                              _SortButton(
+                                isActive: _sort != _ShipSort.defaultOrder,
+                                onTap: () => _openSortSheet(context, s),
+                              ),
                             ],
-                            selected: _filter,
-                            onChanged: (f) => setState(() {
-                              _filter = f;
-                              _showAllDone = false;
-                            }),
                           ),
                         ),
                       ),
@@ -206,6 +276,10 @@ class _RunsheetDetailScreenState
     final pendingItems = showPending ? allPending : <ShipmentModel>[];
     final filteredDone = showDone ? _filteredDoneOf(rs) : <ShipmentModel>[];
     final codSum = _codSumOf(allPending);
+    // Sum COD of DELIVERED only (excludes failed/returned which never paid).
+    final collectedSum = _codSumOf(allDone
+        .where((s) => s.status == ShipmentStatus.delivered)
+        .toList());
 
     // Visible done items (collapse to _kDonePreview when filter==all)
     final visibleDone = (_showAllDone || _filter != _ShipFilter.all)
@@ -244,23 +318,44 @@ class _RunsheetDetailScreenState
         else
           SliverList.builder(
             itemCount: pendingItems.length,
-            itemBuilder: (ctx, i) => _MbStopCard(
-              key: ValueKey(pendingItems[i].id),
-              shipment: pendingItems[i],
-              seq: i + 1,
-              isNext: i == 0,
-              s: s,
-              isDark: isDark,
-              onCall: pendingItems[i].recipientPhone != null
-                  ? () => _launchCall(pendingItems[i].recipientPhone!)
-                  : null,
-              onNavigate: () =>
-                  _launchMaps(_buildAddress(pendingItems[i])),
-              onDeliver: () => context
-                  .push('/scan/delivery?shipmentId=${pendingItems[i].id}&runsheetId=${widget.id}'),
-              onTap: () =>
-                  context.push('/shipments/${pendingItems[i].id}'),
-            ),
+            itemBuilder: (ctx, i) {
+              final ship = pendingItems[i];
+              return Dismissible(
+                key: ValueKey('stop-${ship.id}'),
+                direction: DismissDirection.endToStart,
+                // Require ~35% of the card width before triggering — avoids
+                // accidental swipes while scrolling.
+                dismissThresholds: const {
+                  DismissDirection.endToStart: 0.35,
+                },
+                background: const SizedBox.shrink(),
+                secondaryBackground: _SwipeReturnBackground(label: s.rsdSwipeReturn),
+                confirmDismiss: (_) =>
+                    _showReturnSheet(context, ship, s),
+                child: _MbStopCard(
+                  shipment: ship,
+                  seq: i + 1,
+                  isNext: i == 0,
+                  s: s,
+                  isDark: isDark,
+                  onCall: _hasAnyPhone(ship)
+                      ? () => _handleCallTap(context, ship, s)
+                      : null,
+                  onNavigate: () => _launchMaps(_buildAddress(ship)),
+                  onDeliver: () async {
+                    await context.push(
+                        '/scan/delivery?shipmentId=${ship.id}&runsheetId=${widget.id}');
+                    ref.invalidate(runsheetDetailProvider(widget.id));
+                  },
+                  onReturn: () => _showReturnSheet(context, ship, s),
+                  onTap: () async {
+                    await context.push('/shipments/${ship.id}');
+                    if (!mounted) return;
+                    ref.invalidate(runsheetDetailProvider(widget.id));
+                  },
+                ),
+              );
+            },
           ),
 
       // ── (D) Done group header ────────────────────────────────────────────
@@ -270,6 +365,12 @@ class _RunsheetDetailScreenState
             label: s.rsdGroupDone,
             count: allDone.length,
             countColor: mbOk,
+            // "Encaissé X TND" — sum of COD on delivered colis (green, info).
+            trailingExtra: collectedSum > 0
+                ? s.rsdGroupSumCollected('${_fmtCod(collectedSum)} TND')
+                : null,
+            trailingExtraColor: mbOk,
+            // "Tout afficher" — kept as the tappable affordance (blue).
             trailing: canExpand ? s.rsdShowAll : null,
             trailingColor: mbBlue,
             onTrailingTap: canExpand
@@ -294,7 +395,11 @@ class _RunsheetDetailScreenState
                 items: visibleDone,
                 s: s,
                 isDark: isDark,
-                onTap: (id) => context.push('/shipments/$id'),
+                onTap: (id) async {
+                  await context.push('/shipments/$id');
+                  if (!mounted) return;
+                  ref.invalidate(runsheetDetailProvider(widget.id));
+                },
               ),
             ),
           ),
@@ -302,6 +407,38 @@ class _RunsheetDetailScreenState
   }
 
   // ── Actions ────────────────────────────────────────────────────────────────
+
+  static bool _hasAnyPhone(ShipmentModel sh) =>
+      (sh.recipientPhone?.trim().isNotEmpty ?? false) ||
+      (sh.recipientPhone2?.trim().isNotEmpty ?? false);
+
+  // Opens a picker if the shipment has both a primary and a secondary phone,
+  // otherwise dials the single available number directly.
+  Future<void> _handleCallTap(
+    BuildContext context,
+    ShipmentModel sh,
+    AppStrings s,
+  ) async {
+    final p1 = sh.recipientPhone?.trim();
+    final p2 = sh.recipientPhone2?.trim();
+    final hasP1 = p1 != null && p1.isNotEmpty;
+    final hasP2 = p2 != null && p2.isNotEmpty;
+    if (!hasP1 && !hasP2) return;
+    if (hasP1 && !hasP2) return _launchCall(p1);
+    if (!hasP1 && hasP2) return _launchCall(p2);
+
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      useRootNavigator: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _PhonePickerSheet(
+        primary: p1!,
+        secondary: p2!,
+        s: s,
+      ),
+    );
+    if (picked != null && picked.isNotEmpty) await _launchCall(picked);
+  }
 
   Future<void> _launchCall(String phone) async {
     var p = phone.replaceAll(RegExp(r'[\s\-()+]'), '');
@@ -321,6 +458,20 @@ class _RunsheetDetailScreenState
       if (await canLaunchUrl(web)) {
         unawaited(launchUrl(web, mode: LaunchMode.externalApplication));
       }
+    }
+  }
+
+  // ── Sort sheet ─────────────────────────────────────────────────────────────
+
+  Future<void> _openSortSheet(BuildContext context, AppStrings s) async {
+    final picked = await showModalBottomSheet<_ShipSort>(
+      context: context,
+      useRootNavigator: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _SortSheet(current: _sort, s: s),
+    );
+    if (picked != null && picked != _sort) {
+      setState(() => _sort = picked);
     }
   }
 
@@ -362,6 +513,101 @@ class _RunsheetDetailScreenState
           SnackBar(content: Text('$e'), backgroundColor: mbErr),
         );
       }
+    }
+  }
+
+  // ── Return flow ────────────────────────────────────────────────────────────
+
+  // Returns true when a return (definitive or reschedule) was successfully
+  // submitted, false on cancel or error. Used by the swipe-to-return gesture
+  // to decide whether the Dismissible should keep the card off-screen.
+  Future<bool> _showReturnSheet(
+    BuildContext context,
+    ShipmentModel shipment,
+    AppStrings s,
+  ) async {
+    final choice = await showModalBottomSheet<_ReturnChoice>(
+      context: context,
+      useRootNavigator: true,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _ReturnSheet(shipment: shipment, strings: s),
+    );
+
+    if (choice == null || !context.mounted) return false;
+
+    // Pull motifs from cache if available; trigger a background refresh via
+    // motifsProvider. The sheet shows immediately even on a cold cache —
+    // the dropdown just stays empty until the request completes.
+    final motifsAsync = ref.read(motifsProvider);
+    final motifs = motifsAsync.valueOrNull?.returnReasons ?? const <MotifModel>[];
+
+    final submission = await showModalBottomSheet<_ReturnSubmission>(
+      context: context,
+      useRootNavigator: true,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _ReturnDetailsSheet(
+        shipment: shipment,
+        choice: choice,
+        strings: s,
+        motifs: motifs,
+      ),
+    );
+
+    if (submission == null || !context.mounted) return false;
+
+    final scanRepo = ref.read(scanRepositoryProvider);
+    final barcode =
+        shipment.barcode.isNotEmpty ? shipment.barcode : shipment.trackingNumber;
+    // submission.motif is the motif's `value` from /driver/motifs — already
+    // the canonical label, sent verbatim to the server.
+    final commentParts = [
+      submission.motif,
+      if (submission.details != null && submission.details!.trim().isNotEmpty)
+        submission.details!.trim(),
+    ];
+    final comment = commentParts.join(' — ');
+
+    try {
+      if (choice == _ReturnChoice.definitive) {
+        await scanRepo.scanDelivery(
+          barcode: barcode,
+          status: ShipmentStatus.returned,
+          returnType: 'definitive',
+          comment: comment,
+          shipmentId: shipment.id != 0 ? shipment.id : null,
+        );
+      } else {
+        await scanRepo.scanDelivery(
+          barcode: barcode,
+          status: ShipmentStatus.failed,
+          returnType: 'reschedule',
+          rescheduleDate: submission.rescheduleDate,
+          comment: comment,
+          shipmentId: shipment.id != 0 ? shipment.id : null,
+        );
+      }
+      if (context.mounted) {
+        ref.invalidate(runsheetDetailProvider(widget.id));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              choice == _ReturnChoice.definitive
+                  ? s.rsdReturnSavedDefinitive
+                  : s.rsdReturnSavedReschedule,
+            ),
+          ),
+        );
+      }
+      return true;
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e'), backgroundColor: mbErr),
+        );
+      }
+      return false;
     }
   }
 
@@ -470,6 +716,8 @@ class _GroupHeader extends StatelessWidget {
     this.trailing,
     this.trailingColor,
     this.onTrailingTap,
+    this.trailingExtra,
+    this.trailingExtraColor,
     this.topPadding = 6,
   });
 
@@ -477,9 +725,13 @@ class _GroupHeader extends StatelessWidget {
   final int count;
   final Color countColor;
   final bool isDark;
+  // Tappable trailing label (e.g. "Tout afficher").
   final String? trailing;
   final Color? trailingColor;
   final VoidCallback? onTrailingTap;
+  // Non-tappable info label shown before `trailing` (e.g. "Encaissé X TND").
+  final String? trailingExtra;
+  final Color? trailingExtraColor;
   final double topPadding;
 
   @override
@@ -523,10 +775,22 @@ class _GroupHeader extends StatelessWidget {
               color: isDark ? mbDarkLine2 : mbLine2,
             ),
           ),
+          if (trailingExtra != null) ...[
+            const SizedBox(width: 8),
+            Text(
+              trailingExtra!,
+              style: GoogleFonts.archivo(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: trailingExtraColor ?? labelColor,
+              ),
+            ),
+          ],
           if (trailing != null) ...[
             const SizedBox(width: 8),
             GestureDetector(
               onTap: onTrailingTap,
+              behavior: HitTestBehavior.opaque,
               child: Text(
                 trailing!,
                 style: GoogleFonts.archivo(
@@ -543,11 +807,46 @@ class _GroupHeader extends StatelessWidget {
   }
 }
 
+// ── Swipe-to-return background (revealed when sliding the card end → start) ─
+
+class _SwipeReturnBackground extends StatelessWidget {
+  const _SwipeReturnBackground({required this.label});
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(14, 0, 14, 11),
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      decoration: BoxDecoration(
+        color: mbErr,
+        borderRadius: BorderRadius.circular(18),
+      ),
+      alignment: AlignmentDirectional.centerEnd,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            style: GoogleFonts.archivo(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+              letterSpacing: 0.3,
+            ),
+          ),
+          const SizedBox(width: 8),
+          const Icon(Icons.replay_rounded, color: Colors.white, size: 22),
+        ],
+      ),
+    );
+  }
+}
+
 // ── (C) Pending stop card ─────────────────────────────────────────────────────
 
 class _MbStopCard extends StatelessWidget {
   const _MbStopCard({
-    super.key,
     required this.shipment,
     required this.seq,
     required this.isNext,
@@ -556,6 +855,7 @@ class _MbStopCard extends StatelessWidget {
     required this.onCall,
     required this.onNavigate,
     required this.onDeliver,
+    required this.onReturn,
     required this.onTap,
   });
 
@@ -567,6 +867,7 @@ class _MbStopCard extends StatelessWidget {
   final VoidCallback? onCall;
   final VoidCallback onNavigate;
   final VoidCallback onDeliver;
+  final VoidCallback onReturn;
   final VoidCallback onTap;
 
   @override
@@ -763,6 +1064,18 @@ class _MbStopCard extends StatelessWidget {
                       ],
                     ),
 
+                    // Delivery flags + note preview
+                    if (sh.isExchange ||
+                        sh.requiresOpen ||
+                        (sh.notes ?? '').trim().isNotEmpty) ...[
+                      const SizedBox(height: 10),
+                      _ShipmentFlagsBlock(
+                        shipment: sh,
+                        s: s,
+                        isDark: isDark,
+                      ),
+                    ],
+
                     const SizedBox(height: 13),
 
                     // Action buttons
@@ -775,11 +1088,27 @@ class _MbStopCard extends StatelessWidget {
                           onTap: onCall ?? () {},
                         ),
                         const SizedBox(width: 8),
-                        _IconActionBtn(
-                          icon: Icons.near_me_rounded,
-                          isDark: isDark,
-                          enabled: hasAddress,
-                          onTap: onNavigate,
+                        // _IconActionBtn(
+                        //   icon: Icons.near_me_rounded,
+                        //   isDark: isDark,
+                        //   enabled: hasAddress,
+                        //   onTap: onNavigate,
+                        // ),
+                        SizedBox(
+                          width: 46,
+                          height: 42,
+                          child: OutlinedButton(
+                            onPressed: onReturn,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: mbErr,
+                              side: const BorderSide(color: mbErr, width: 1.5),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              padding: EdgeInsets.zero,
+                            ),
+                            child: const Icon(Icons.replay_rounded, size: 18),
+                          ),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
@@ -1032,17 +1361,40 @@ class _MbDoneRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final sh = shipment;
     final isDelivered = sh.status == ShipmentStatus.delivered;
+    final isReturned = sh.status == ShipmentStatus.returned;
+    final isRescheduled = sh.status == ShipmentStatus.failed;
     final address = _RunsheetDetailScreenState._buildAddress(sh);
     final tracking =
         sh.trackingNumber.isNotEmpty ? sh.trackingNumber : sh.barcode;
     final time = _RunsheetDetailScreenState._fmtTime(
         _RunsheetDetailScreenState._terminalEventTime(sh));
-    final failReason = isDelivered
+    final reason = isDelivered
         ? null
         : _RunsheetDetailScreenState._failReason(sh);
     final metaStr = isDelivered
         ? s.rsdDeliveredAt(time)
-        : s.rsdFailedAt(failReason ?? '', time);
+        : isReturned
+            ? s.rsdReturnedAt(reason ?? '', time)
+            : isRescheduled
+                ? s.rsdRescheduledAt(reason ?? '', time)
+                : s.rsdFailedAt(reason ?? '', time);
+
+    final Color iconBg;
+    final Color iconFg;
+    final IconData iconData;
+    if (isDelivered) {
+      iconBg = mbOkBg;
+      iconFg = mbOk;
+      iconData = Icons.check_rounded;
+    } else if (isRescheduled) {
+      iconBg = mbPendBg;
+      iconFg = mbBlue;
+      iconData = Icons.event_repeat_rounded;
+    } else {
+      iconBg = mbErrBg;
+      iconFg = mbErr;
+      iconData = Icons.replay_rounded;
+    }
 
     final ink = isDark ? mbDarkInk : mbInk;
     final ink3 = isDark ? mbDarkInk3 : mbInk3;
@@ -1062,14 +1414,10 @@ class _MbDoneRow extends StatelessWidget {
                 width: 26,
                 height: 26,
                 decoration: BoxDecoration(
-                  color: isDelivered ? mbOkBg : mbErrBg,
+                  color: iconBg,
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Icon(
-                  isDelivered ? Icons.check_rounded : Icons.close_rounded,
-                  size: 14,
-                  color: isDelivered ? mbOk : mbErr,
-                ),
+                child: Icon(iconData, size: 14, color: iconFg),
               ),
               const SizedBox(width: 11),
 
@@ -1441,7 +1789,7 @@ class _SummaryHeader extends StatelessWidget {
       };
 
   static String _fmtCod(double v) {
-    if (v <= 0) return '0 DH';
+    if (v <= 0) return '0 TND';
     final n = v.toInt();
     final str = n.toString();
     final buf = StringBuffer();
@@ -1450,7 +1798,7 @@ class _SummaryHeader extends StatelessWidget {
       if (i > 0 && (len - i) % 3 == 0) buf.write(' ');
       buf.write(str[i]);
     }
-    buf.write(' DH');
+    buf.write(' TND');
     return buf.toString();
   }
 }
@@ -1879,6 +2227,1082 @@ class _CloseConfirmSheet extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Return bottom sheet ─────────────────────────────────────────────────────────
+
+class _ReturnSheet extends StatelessWidget {
+  const _ReturnSheet({
+    required this.shipment,
+    required this.strings,
+  });
+
+  final ShipmentModel shipment;
+  final AppStrings strings;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final safeBottom = MediaQuery.paddingOf(context).bottom;
+
+    final surfaceColor = isDark ? mbDarkSurface : Colors.white;
+    final inkColor = isDark ? mbDarkInk : mbInk;
+    final ink2Color = isDark ? mbDarkInk2 : mbInk2;
+    final lineColor = isDark ? mbDarkLine : mbLine;
+    final surface2 = isDark ? mbDarkBg : mbSurface2;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: surfaceColor,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x22000000),
+            blurRadius: 24,
+            offset: Offset(0, -4),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Grab handle
+          const SizedBox(height: 8),
+          Center(
+            child: Container(
+              width: 38,
+              height: 4,
+              decoration: BoxDecoration(
+                color: lineColor,
+                borderRadius: BorderRadius.circular(3),
+              ),
+            ),
+          ),
+          Padding(
+            padding: EdgeInsets.fromLTRB(20, 18, 20, 20 + safeBottom),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Shipment info header
+                Row(
+                  children: [
+                    Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        color: mbErrBg,
+                        borderRadius: BorderRadius.circular(13),
+                      ),
+                      child: const Icon(Icons.replay_rounded,
+                          color: mbErr, size: 22),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            shipment.recipientName,
+                            style: GoogleFonts.archivo(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: inkColor,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            shipment.trackingNumber,
+                            style: GoogleFonts.splineSansMono(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: ink2Color,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+
+                // "Retour définitif" option
+                GestureDetector(
+                  onTap: () =>
+                      Navigator.of(context).pop(_ReturnChoice.definitive),
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: surface2,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: mbErr.withAlpha(60), width: 1),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: mbErrBg,
+                            borderRadius: BorderRadius.circular(11),
+                          ),
+                          child: const Icon(Icons.replay_rounded,
+                              color: mbErr, size: 20),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Retour définitif',
+                                style: GoogleFonts.archivo(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700,
+                                  color: inkColor,
+                                ),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                'Client absent · Retour à l\'expéditeur',
+                                style: GoogleFonts.hankenGrotesk(
+                                  fontSize: 12,
+                                  color: ink2Color,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const Icon(Icons.chevron_right_rounded,
+                            color: mbInk3, size: 20),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 11),
+
+                // "Reprogrammer" option
+                GestureDetector(
+                  onTap: () =>
+                      Navigator.of(context).pop(_ReturnChoice.reschedule),
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: surface2,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: mbPendBg, width: 1),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: mbPendBg,
+                            borderRadius: BorderRadius.circular(11),
+                          ),
+                          child: const Icon(Icons.calendar_today_rounded,
+                              color: mbBlue, size: 20),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Reprogrammer',
+                                style: GoogleFonts.archivo(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700,
+                                  color: inkColor,
+                                ),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                'Le client a demandé un autre jour',
+                                style: GoogleFonts.hankenGrotesk(
+                                  fontSize: 12,
+                                  color: ink2Color,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const Icon(Icons.chevron_right_rounded,
+                            color: mbInk3, size: 20),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Cancel button
+                SizedBox(
+                  height: 48,
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: inkColor,
+                      side: BorderSide(color: lineColor, width: 1.5),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(13),
+                      ),
+                    ),
+                    child: Text(
+                      'Annuler',
+                      style: GoogleFonts.archivo(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: inkColor,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Return details sheet (motif + details + optional reschedule date) ──────────
+
+class _ReturnDetailsSheet extends StatefulWidget {
+  const _ReturnDetailsSheet({
+    required this.shipment,
+    required this.choice,
+    required this.strings,
+    required this.motifs,
+  });
+
+  final ShipmentModel shipment;
+  final _ReturnChoice choice;
+  final AppStrings strings;
+  // Motifs fetched from GET /driver/motifs → return_reasons. Same list is used
+  // for both reschedule and definitive (matches the web app).
+  final List<MotifModel> motifs;
+
+  @override
+  State<_ReturnDetailsSheet> createState() => _ReturnDetailsSheetState();
+}
+
+class _ReturnDetailsSheetState extends State<_ReturnDetailsSheet> {
+  MotifModel? _motif;
+  DateTime? _rescheduleDate;
+  final _detailsCtrl = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    // Pre-fill reschedule with J+1 — the most common driver choice ("retry
+    // tomorrow"). User can still tap the picker to override.
+    if (widget.choice == _ReturnChoice.reschedule) {
+      final now = DateTime.now();
+      _rescheduleDate = DateTime(now.year, now.month, now.day)
+          .add(const Duration(days: 1));
+    }
+  }
+
+  @override
+  void dispose() {
+    _detailsCtrl.dispose();
+    super.dispose();
+  }
+
+  String _motifLabel(MotifModel m) =>
+      (m.emoji != null && m.emoji!.isNotEmpty)
+          ? '${m.emoji}  ${m.value}'
+          : m.value;
+
+  bool get _canConfirm {
+    if (_motif == null) return false;
+    if (widget.choice == _ReturnChoice.reschedule && _rescheduleDate == null) {
+      return false;
+    }
+    return true;
+  }
+
+  String _fmtIsoDate(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-'
+      '${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
+
+  String _fmtDisplayDate(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')}/'
+      '${d.month.toString().padLeft(2, '0')}/${d.year}';
+
+  Future<void> _pickDate() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _rescheduleDate ?? now.add(const Duration(days: 1)),
+      firstDate: now,
+      lastDate: now.add(const Duration(days: 90)),
+    );
+    if (picked != null) setState(() => _rescheduleDate = picked);
+  }
+
+  void _submit() {
+    if (!_canConfirm) return;
+    final details = _detailsCtrl.text.trim();
+    Navigator.of(context).pop(_ReturnSubmission(
+      // Send the canonical motif value (no emoji) to the API — the emoji is
+      // for display only.
+      motif: _motif!.value,
+      details: details.isEmpty ? null : details,
+      rescheduleDate: widget.choice == _ReturnChoice.reschedule
+          ? _fmtIsoDate(_rescheduleDate!)
+          : null,
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.strings;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final safeBottom = MediaQuery.paddingOf(context).bottom;
+    final viewInsets = MediaQuery.viewInsetsOf(context).bottom;
+
+    final surfaceColor = isDark ? mbDarkSurface : Colors.white;
+    final inkColor = isDark ? mbDarkInk : mbInk;
+    final ink2Color = isDark ? mbDarkInk2 : mbInk2;
+    final ink3Color = isDark ? mbDarkInk3 : mbInk3;
+    final lineColor = isDark ? mbDarkLine : mbLine;
+    final fieldBg = isDark ? mbDarkBg : mbSurface2;
+
+    final isReschedule = widget.choice == _ReturnChoice.reschedule;
+    final headerIcon =
+        isReschedule ? Icons.calendar_today_rounded : Icons.replay_rounded;
+    final headerColor = isReschedule ? mbBlue : mbErr;
+    final headerBg = isReschedule ? mbPendBg : mbErrBg;
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: viewInsets),
+      child: Container(
+        decoration: BoxDecoration(
+          color: surfaceColor,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x22000000),
+              blurRadius: 24,
+              offset: Offset(0, -4),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const SizedBox(height: 8),
+            Center(
+              child: Container(
+                width: 38,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: lineColor,
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+            ),
+            Padding(
+              padding: EdgeInsets.fromLTRB(20, 18, 20, 20 + safeBottom),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Header
+                  Row(
+                    children: [
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: headerBg,
+                          borderRadius: BorderRadius.circular(13),
+                        ),
+                        child: Icon(headerIcon, color: headerColor, size: 22),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              widget.shipment.recipientName,
+                              style: GoogleFonts.archivo(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                                color: inkColor,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              widget.shipment.trackingNumber,
+                              style: GoogleFonts.splineSansMono(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: ink2Color,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Date picker — reschedule only
+                  if (isReschedule) ...[
+                    Text(
+                      s.rsdRescheduleDateLabel,
+                      style: GoogleFonts.archivo(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w700,
+                        color: inkColor,
+                      ),
+                    ),
+                    const SizedBox(height: 7),
+                    InkWell(
+                      onTap: _pickDate,
+                      borderRadius: BorderRadius.circular(11),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 13),
+                        decoration: BoxDecoration(
+                          color: fieldBg,
+                          border: Border.all(color: lineColor, width: 1),
+                          borderRadius: BorderRadius.circular(11),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.calendar_today_rounded,
+                                size: 16, color: ink2Color),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                _rescheduleDate == null
+                                    ? s.rsdRescheduleDatePick
+                                    : _fmtDisplayDate(_rescheduleDate!),
+                                style: GoogleFonts.hankenGrotesk(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w500,
+                                  color: _rescheduleDate == null
+                                      ? ink3Color
+                                      : inkColor,
+                                ),
+                              ),
+                            ),
+                            Icon(Icons.expand_more_rounded,
+                                size: 18, color: ink2Color),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                  ],
+
+                  // Motif dropdown
+                  Text(
+                    s.rsdReturnMotifLabel,
+                    style: GoogleFonts.archivo(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                      color: inkColor,
+                    ),
+                  ),
+                  const SizedBox(height: 7),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                    decoration: BoxDecoration(
+                      color: fieldBg,
+                      border: Border.all(color: lineColor, width: 1),
+                      borderRadius: BorderRadius.circular(11),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<MotifModel>(
+                        value: _motif,
+                        isExpanded: true,
+                        hint: Text(
+                          widget.motifs.isEmpty
+                              ? '...'
+                              : s.rsdReturnMotifPlaceholder,
+                          style: GoogleFonts.hankenGrotesk(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                            color: ink3Color,
+                          ),
+                        ),
+                        icon: Icon(Icons.expand_more_rounded,
+                            size: 20, color: ink2Color),
+                        items: [
+                          for (final m in widget.motifs)
+                            DropdownMenuItem(
+                              value: m,
+                              child: Text(
+                                _motifLabel(m),
+                                style: GoogleFonts.hankenGrotesk(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w500,
+                                  color: inkColor,
+                                ),
+                              ),
+                            ),
+                        ],
+                        onChanged: widget.motifs.isEmpty
+                            ? null
+                            : (v) => setState(() => _motif = v),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+
+                  // Details textarea
+                  Text(
+                    s.rsdReturnDetailsLabel,
+                    style: GoogleFonts.archivo(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                      color: inkColor,
+                    ),
+                  ),
+                  const SizedBox(height: 7),
+                  TextField(
+                    controller: _detailsCtrl,
+                    minLines: 3,
+                    maxLines: 5,
+                    style: GoogleFonts.hankenGrotesk(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                      color: inkColor,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: s.rsdReturnDetailsPlaceholder,
+                      hintStyle: GoogleFonts.hankenGrotesk(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                        color: ink3Color,
+                      ),
+                      filled: true,
+                      fillColor: fieldBg,
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 12),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(11),
+                        borderSide: BorderSide(color: lineColor, width: 1),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(11),
+                        borderSide: BorderSide(color: lineColor, width: 1),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(11),
+                        borderSide: BorderSide(color: mbBlue, width: 1.5),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+
+                  // Confirm
+                  SizedBox(
+                    height: 48,
+                    child: FilledButton(
+                      onPressed: _canConfirm ? _submit : null,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: headerColor,
+                        disabledBackgroundColor:
+                            (isDark ? mbDarkLine : mbLine),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(13),
+                        ),
+                      ),
+                      child: Text(
+                        s.rsdReturnConfirm,
+                        style: GoogleFonts.archivo(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+
+                  // Cancel
+                  SizedBox(
+                    height: 44,
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: inkColor,
+                        side: BorderSide(color: lineColor, width: 1.2),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(13),
+                        ),
+                      ),
+                      child: Text(
+                        'Annuler',
+                        style: GoogleFonts.archivo(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: inkColor,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Sort button (trailing icon in the sticky filter row) ─────────────────────
+
+class _SortButton extends StatelessWidget {
+  const _SortButton({required this.isActive, required this.onTap});
+  final bool isActive;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bg = isActive
+        ? mbBlue.withAlpha(0x22)
+        : (isDark ? mbDarkSurface2 : mbSurface3);
+    final fg = isActive ? mbBlue : (isDark ? mbDarkInk2 : mbInk2);
+    return Semantics(
+      button: true,
+      label: 'Sort',
+      child: Padding(
+        padding: const EdgeInsets.only(left: 6),
+        child: Material(
+          color: bg,
+          borderRadius: BorderRadius.circular(10),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: onTap,
+            child: SizedBox(
+              width: 36,
+              height: 36,
+              child: Icon(Icons.swap_vert_rounded, size: 20, color: fg),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Sort picker sheet ────────────────────────────────────────────────────────
+
+class _SortSheet extends StatelessWidget {
+  const _SortSheet({required this.current, required this.s});
+  final _ShipSort current;
+  final AppStrings s;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bg = isDark ? mbDarkSurface : mbSurface;
+    final bottom = MediaQuery.paddingOf(context).bottom;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(0, 10, 0, 8 + bottom),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Center(
+                child: Container(
+                  width: 38,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: isDark ? mbDarkLine : mbLine,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 18),
+                child: Text(
+                  s.rsdSortTitle,
+                  style: GoogleFonts.archivo(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: isDark ? mbDarkInk : mbInk,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              _SortOptionTile(
+                icon: Icons.format_list_numbered_rounded,
+                label: s.rsdSortDefault,
+                selected: current == _ShipSort.defaultOrder,
+                onTap: () =>
+                    Navigator.of(context).pop(_ShipSort.defaultOrder),
+                isDark: isDark,
+              ),
+              _SortOptionTile(
+                icon: Icons.location_city_rounded,
+                label: s.rsdSortByCity,
+                selected: current == _ShipSort.city,
+                onTap: () => Navigator.of(context).pop(_ShipSort.city),
+                isDark: isDark,
+              ),
+              _SortOptionTile(
+                icon: Icons.sort_by_alpha_rounded,
+                label: s.rsdSortByName,
+                selected: current == _ShipSort.name,
+                onTap: () => Navigator.of(context).pop(_ShipSort.name),
+                isDark: isDark,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SortOptionTile extends StatelessWidget {
+  const _SortOptionTile({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    required this.isDark,
+  });
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final bool isDark;
+
+  @override
+  Widget build(BuildContext context) {
+    final ink = isDark ? mbDarkInk : mbInk;
+    final ink2 = isDark ? mbDarkInk2 : mbInk2;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: selected ? mbBlue : ink2),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Text(
+                label,
+                style: GoogleFonts.hankenGrotesk(
+                  fontSize: 14,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  color: selected ? mbBlue : ink,
+                ),
+              ),
+            ),
+            if (selected)
+              const Icon(Icons.check_rounded, size: 18, color: mbBlue),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Shipment flags + note preview (shown inside _MbStopCard) ────────────────
+
+class _ShipmentFlagsBlock extends StatelessWidget {
+  const _ShipmentFlagsBlock({
+    required this.shipment,
+    required this.s,
+    required this.isDark,
+  });
+  final ShipmentModel shipment;
+  final AppStrings s;
+  final bool isDark;
+
+  @override
+  Widget build(BuildContext context) {
+    final note = (shipment.notes ?? '').trim();
+    final hasFlags = shipment.requiresOpen || shipment.isExchange;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (hasFlags)
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              if (shipment.requiresOpen)
+                _FlagChip(
+                  icon: Icons.unarchive_outlined,
+                  label: s.rsdFlagOpen,
+                  color: mbWarn,
+                  bg: mbWarnBg,
+                ),
+              if (shipment.isExchange)
+                _FlagChip(
+                  icon: Icons.swap_horizontal_circle_outlined,
+                  label: s.rsdFlagExchange,
+                  color: mbBlue,
+                  bg: mbPendBg,
+                ),
+            ],
+          ),
+        if (hasFlags && note.isNotEmpty) const SizedBox(height: 6),
+        if (note.isNotEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.fromLTRB(9, 7, 9, 8),
+            decoration: BoxDecoration(
+              color: isDark ? mbDarkSurface2 : mbSurface2,
+              borderRadius: BorderRadius.circular(9),
+              border: Border.all(
+                color: isDark ? mbDarkLine : mbLine,
+                width: 1,
+              ),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  Icons.sticky_note_2_outlined,
+                  size: 13,
+                  color: isDark ? mbDarkInk3 : mbInk3,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: RichText(
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    text: TextSpan(
+                      children: [
+                        TextSpan(
+                          text: '${s.rsdNoteLabel}: ',
+                          style: GoogleFonts.archivo(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: isDark ? mbDarkInk2 : mbInk2,
+                          ),
+                        ),
+                        TextSpan(
+                          text: note,
+                          style: GoogleFonts.hankenGrotesk(
+                            fontSize: 12,
+                            height: 1.3,
+                            color: isDark ? mbDarkInk : mbInk,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _FlagChip extends StatelessWidget {
+  const _FlagChip({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.bg,
+  });
+  final IconData icon;
+  final String label;
+  final Color color;
+  final Color bg;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(7, 4, 9, 4),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withAlpha(0x55), width: 1),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: GoogleFonts.archivo(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w700,
+              color: color,
+              letterSpacing: 0.2,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Phone picker sheet (when shipment has 2 numbers) ────────────────────────
+
+class _PhonePickerSheet extends StatelessWidget {
+  const _PhonePickerSheet({
+    required this.primary,
+    required this.secondary,
+    required this.s,
+  });
+  final String primary;
+  final String secondary;
+  final AppStrings s;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bg = isDark ? mbDarkSurface : mbSurface;
+    final bottom = MediaQuery.paddingOf(context).bottom;
+    return Container(
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(0, 10, 0, 8 + bottom),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Center(
+                child: Container(
+                  width: 38,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: isDark ? mbDarkLine : mbLine,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 18),
+                child: Text(
+                  s.rsdCallPickTitle,
+                  style: GoogleFonts.archivo(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: isDark ? mbDarkInk : mbInk,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              _PhoneTile(
+                role: s.rsdPhonePrimary,
+                phone: primary,
+                onTap: () => Navigator.of(context).pop(primary),
+                isDark: isDark,
+              ),
+              _PhoneTile(
+                role: s.rsdPhoneSecondary,
+                phone: secondary,
+                onTap: () => Navigator.of(context).pop(secondary),
+                isDark: isDark,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PhoneTile extends StatelessWidget {
+  const _PhoneTile({
+    required this.role,
+    required this.phone,
+    required this.onTap,
+    required this.isDark,
+  });
+  final String role;
+  final String phone;
+  final VoidCallback onTap;
+  final bool isDark;
+
+  @override
+  Widget build(BuildContext context) {
+    final ink = isDark ? mbDarkInk : mbInk;
+    final ink2 = isDark ? mbDarkInk2 : mbInk2;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: mbBlue.withAlpha(0x1A),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              alignment: Alignment.center,
+              child: const Icon(Icons.phone_rounded, color: mbBlue, size: 18),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    role,
+                    style: GoogleFonts.archivo(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.4,
+                      color: ink2,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    phone,
+                    style: GoogleFonts.splineSansMono(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: ink,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right_rounded, size: 20, color: ink2),
+          ],
+        ),
       ),
     );
   }

@@ -135,6 +135,7 @@ class _ErrorInterceptor extends Interceptor {
           message,
           errors: _extractErrors(body),
         ),
+      429 => RateLimitException(message),
       _ when (status ?? 0) >= 500 => ServerException(message, status),
       _ => UnknownException(message),
     };

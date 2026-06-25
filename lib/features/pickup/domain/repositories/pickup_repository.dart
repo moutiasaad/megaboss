@@ -33,10 +33,43 @@ class PickupRepository {
     }
   }
 
+  // Fetches /driver/pickups/active and returns a merged list: server active
+  // pickups + locally-cached "done" pickups that the server no longer returns.
+  // The server has no list-all endpoint, so completed manifests would otherwise
+  // disappear from the list the moment they finish.
   Future<List<PickupModel>> getActive() async {
-    final pickups = await _service.getActive();
-    _box.put('active', jsonEncode(pickups.map((p) => p.toJson()).toList()));
-    return pickups;
+    final fresh = await _service.getActive();
+    final freshIds = fresh.map((p) => p.id).toSet();
+    final keptDone = cachedList
+        .where((p) => _isDone(p) && !freshIds.contains(p.id))
+        .toList();
+    final merged = [...fresh, ...keptDone];
+
+    _box.put('active', jsonEncode(fresh.map((p) => p.toJson()).toList()));
+    _box.put('list', jsonEncode(merged.map((p) => p.toJson()).toList()));
+    return merged;
+  }
+
+  // ── Merged list (active + cached done) ────────────────────────────────────
+
+  List<PickupModel> get cachedList {
+    final raw = _box.get('list');
+    if (raw == null) return [];
+    try {
+      return (jsonDecode(raw) as List<dynamic>)
+          .map((e) => PickupModel.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static bool _isDone(PickupModel p) {
+    if (p.totalShipments > 0 && p.collectedCount >= p.totalShipments) {
+      return true;
+    }
+    final s = p.status.toLowerCase();
+    return s == 'completed' || s == 'closed' || s == 'done' || s == 'collected';
   }
 
   // ── Detail ─────────────────────────────────────────────────────────────────
@@ -72,6 +105,7 @@ class PickupRepository {
     try {
       final pickup = PickupModel.fromJson(jsonDecode(raw) as Map<String, dynamic>);
       _box.put('$id', jsonEncode(pickup.copyWith(status: PickupStatus.completed).toJson()));
+      _syncListCaches(id, status: PickupStatus.completed);
     } catch (_) {}
   }
 
@@ -107,6 +141,30 @@ class PickupRepository {
         collectedCount: collected,
       );
       _box.put('$manifestId', jsonEncode(updated.toJson()));
+      _syncListCaches(manifestId, collectedCount: collected);
     } catch (_) {}
+  }
+
+  // Keep 'list' + 'active' cache entries in sync with per-manifest cache so the
+  // pickups list reflects detail-screen actions immediately on return.
+  void _syncListCaches(int manifestId, {int? collectedCount, String? status}) {
+    for (final key in const ['list', 'active']) {
+      final raw = _box.get(key);
+      if (raw == null) continue;
+      try {
+        final list = (jsonDecode(raw) as List<dynamic>)
+            .map((e) => PickupModel.fromJson(e as Map<String, dynamic>))
+            .toList();
+        final updated = list
+            .map((p) => p.id == manifestId
+                ? p.copyWith(
+                    collectedCount: collectedCount,
+                    status: status,
+                  )
+                : p)
+            .toList();
+        _box.put(key, jsonEncode(updated.map((p) => p.toJson()).toList()));
+      } catch (_) {}
+    }
   }
 }

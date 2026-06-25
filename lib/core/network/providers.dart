@@ -6,6 +6,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'api_client.dart';
 import 'offline_queue.dart';
 import 'sync_push_service.dart';
+import '../services/fcm_registration_service.dart';
 import '../services/fcm_service.dart';
 import '../../features/auth/data/models/driver_model.dart';
 import '../../features/auth/data/services/auth_service.dart';
@@ -25,6 +26,9 @@ import '../../features/notifications/data/services/notification_service.dart';
 import '../../features/notifications/domain/repositories/notification_repository.dart';
 import '../../features/stats/data/services/stats_service.dart';
 import '../../features/stats/domain/repositories/stats_repository.dart';
+import '../../features/motifs/data/models/motif_model.dart';
+import '../../features/motifs/data/services/motifs_service.dart';
+import '../../features/motifs/domain/repositories/motifs_repository.dart';
 
 // ── Infrastructure ─────────────────────────────────────────────────────────────
 
@@ -89,6 +93,15 @@ final authRepositoryProvider = Provider<AuthRepository>((ref) {
     deviceService: ref.watch(deviceServiceProvider),
     apiClient: ref.watch(apiClientProvider),
     driverBox: ref.watch(driverBoxProvider),
+  );
+});
+
+// FCM device registration — single instance per app run so the onTokenRefresh
+// subscription survives across login / logout cycles within the same session.
+final fcmRegistrationServiceProvider = Provider<FcmRegistrationService>((ref) {
+  return FcmRegistrationService(
+    fcmService: ref.watch(fcmServiceProvider),
+    authRepository: ref.watch(authRepositoryProvider),
   );
 });
 
@@ -196,6 +209,45 @@ final statsRepositoryProvider = Provider<StatsRepository>((ref) {
     service: ref.watch(statsServiceProvider),
     box: ref.watch(statsBoxProvider),
   );
+});
+
+// ── Motifs (return + refusal reasons) ─────────────────────────────────────────
+
+final motifsServiceProvider = Provider<MotifsService>(
+  (ref) => MotifsService(ref.watch(apiClientProvider)),
+);
+
+final motifsBoxProvider = Provider<Box<String>>((_) => throw UnimplementedError());
+
+final motifsRepositoryProvider = Provider<MotifsRepository>((ref) {
+  return MotifsRepository(
+    service: ref.watch(motifsServiceProvider),
+    box: ref.watch(motifsBoxProvider),
+  );
+});
+
+// Cache-first motifs: returns cached entry immediately if present, refreshes
+// in the background. Errors fall back to cache; if no cache, returns empty.
+final motifsProvider = FutureProvider<MotifsModel>((ref) async {
+  final repo = ref.watch(motifsRepositoryProvider);
+  final cached = repo.cached;
+  if (cached != null) {
+    // Refresh in background, ignore failures (cache stays usable).
+    Future.microtask(() async {
+      try {
+        final fresh = await repo.get();
+        ref.invalidateSelf();
+        // ignore: unused_local_variable
+        final _ = fresh;
+      } catch (_) {}
+    });
+    return cached;
+  }
+  try {
+    return await repo.get();
+  } catch (_) {
+    return MotifsModel.empty;
+  }
 });
 
 // ── Convenience: current driver from cache ─────────────────────────────────────

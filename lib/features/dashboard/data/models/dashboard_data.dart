@@ -13,6 +13,7 @@ class RunsheetSummary {
     required this.delivered,
     required this.failed,
     required this.remaining,
+    this.createdAt,
   });
 
   final int id;
@@ -21,10 +22,16 @@ class RunsheetSummary {
   final int delivered;
   final int failed;
   final int remaining;
+  final DateTime? createdAt;
 
   double get deliveredPct => total > 0 ? delivered / total : 0;
   double get failedPct => total > 0 ? failed / total : 0;
   double get remainingPct => total > 0 ? remaining / total : 0;
+
+  // In-progress runsheet that's been open for 24h+ — should display in red.
+  bool get isOverdue =>
+      createdAt != null &&
+      DateTime.now().difference(createdAt!).inHours >= 24;
 
   factory RunsheetSummary.from(RunsheetModel r) => RunsheetSummary(
         id: r.id,
@@ -33,6 +40,7 @@ class RunsheetSummary {
         delivered: r.deliveredCount,
         failed: r.failedCount,
         remaining: r.pendingCount,
+        createdAt: r.createdAt,
       );
 }
 
@@ -41,23 +49,49 @@ class PickupSummary {
     required this.id,
     required this.manifestNumber,
     required this.senderName,
-    required this.pendingCount,
+    required this.totalShipments,
+    required this.collectedCount,
     this.zone,
   });
 
   final int id;
   final String manifestNumber;
   final String senderName;
-  final int pendingCount;
+  final int totalShipments;
+  final int collectedCount;
   final String? zone;
+
+  int get pendingCount => totalShipments - collectedCount;
 
   factory PickupSummary.from(PickupModel p) => PickupSummary(
         id: p.id,
         manifestNumber: p.manifestNumber,
         senderName: p.senderName,
-        pendingCount: p.pendingCount,
+        totalShipments: p.totalShipments,
+        collectedCount: p.collectedCount,
         zone: p.senderAddress,
       );
+
+  // Dashboard card surfaces a single manifest header but the collected/total
+  // counts must reflect ALL active pickups assigned to the driver — sum totals
+  // across the list while keeping the first pickup's identity.
+  factory PickupSummary.aggregate(List<PickupModel> pickups) {
+    final head = pickups.first;
+    var total = 0;
+    var collected = 0;
+    for (final p in pickups) {
+      total += p.totalShipments;
+      collected += p.collectedCount;
+    }
+    return PickupSummary(
+      id: head.id,
+      manifestNumber: head.manifestNumber,
+      senderName: head.senderName,
+      totalShipments: total,
+      collectedCount: collected,
+      zone: head.senderAddress,
+    );
+  }
 }
 
 class DayStats {

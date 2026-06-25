@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 import '../../../../core/network/providers.dart';
 import '../../../../core/network/sync_operation.dart';
+import '../../../pickup/data/models/pickup_model.dart';
 import '../../data/models/scan_result_model.dart';
 
 enum ScanAddResult { added, duplicate, notInManifest }
@@ -83,7 +84,8 @@ class PickupScanController
 
   // Returns the outcome of trying to add a barcode:
   //   added          — new barcode, accepted
-  //   duplicate      — already in this session's scanned list
+  //   duplicate      — already in this session's scanned list,
+  //                    OR already collected/refused via the detail screen
   //   notInManifest  — barcode not found in the manifest's shipment list
   //                    (only rejects when the manifest is loaded and has shipments)
   ScanAddResult add(String barcode) {
@@ -93,8 +95,14 @@ class PickupScanController
     // Validate against the manifest when available
     final manifest = ref.read(pickupRepositoryProvider).cached(arg);
     if (manifest != null && manifest.shipments.isNotEmpty) {
-      final inManifest = manifest.shipments.any((s) => s.matchesCode(code));
-      if (!inManifest) return ScanAddResult.notInManifest;
+      final match =
+          manifest.shipments.where((s) => s.matchesCode(code)).firstOrNull;
+      if (match == null) return ScanAddResult.notInManifest;
+      // Shipment already actioned via PickupDetailScreen (accept/refuse) — block.
+      if (match.status == PickupShipmentStatus.collected ||
+          match.status == PickupShipmentStatus.refused) {
+        return ScanAddResult.duplicate;
+      }
     }
 
     state = state.copyWith(scanned: [code, ...state.scanned]);

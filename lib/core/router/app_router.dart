@@ -19,7 +19,6 @@ import '../../features/stats/presentation/screens/stats_screen.dart';
 import '../i18n/app_strings.dart';
 import '../providers/locale_provider.dart';
 import '../theme/colors.dart';
-import '../widgets/mb_fab.dart';
 import '../widgets/mb_tab_bar.dart';
 
 // ── Router provider ────────────────────────────────────────────────────────────
@@ -196,8 +195,6 @@ class _MainShell extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef widgetRef) {
     final locale = widgetRef.watch(localeProvider);
     final s = AppStrings.of(locale.languageCode);
-    final currentPath = GoRouterState.of(context).uri.path;
-    final showFab = currentPath == '/dashboard';
 
     return Scaffold(
       backgroundColor:
@@ -205,13 +202,6 @@ class _MainShell extends ConsumerWidget {
               ? mbDarkBg
               : mbSurface2,
       body: shell,
-      floatingActionButton: showFab
-          ? MbFab(
-              label: s.dashScan,
-              onTap: () => context.push('/scan/delivery'),
-            )
-          : null,
-      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
       bottomNavigationBar: MbTabBar(
         currentIndex: shell.currentIndex,
         onTap: (i) => _onTabTap(context, i),

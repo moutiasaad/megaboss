@@ -19,10 +19,12 @@ class ShipmentModel {
     this.requiresSignature = false,
     this.requiresPhoto = false,
     this.requiresOpen = false,
+    this.isExchange = false,
     this.isFragile = false,
     this.nbArticles = 1,
     this.timeline = const [],
     this.senderName,
+    this.senderPhone,
     this.etaMin,
     this.distanceKm,
   });
@@ -43,10 +45,12 @@ class ShipmentModel {
   final bool requiresSignature;
   final bool requiresPhoto;
   final bool requiresOpen;
+  final bool isExchange;
   final bool isFragile;
   final int nbArticles;
   final List<TimelineEventModel> timeline;
   final String? senderName;
+  final String? senderPhone;
   final int? etaMin;
   final double? distanceKm;
 
@@ -87,6 +91,9 @@ class ShipmentModel {
       requiresPhoto: json['requires_photo'] as bool? ?? false,
       requiresOpen: json['requires_open'] as bool? ??
           (json['ouvrir'] as String?)?.toLowerCase() == 'oui',
+      isExchange: json['is_exchange'] as bool? ??
+          json['exchange'] as bool? ??
+          (json['echange'] as String?)?.toLowerCase() == 'oui',
       isFragile: json['is_fragile'] as bool? ??
           (json['fragile'] as String?) == '1',
       nbArticles: json['nb_articles'] as int? ?? json['nb_article'] as int? ?? 1,
@@ -95,6 +102,7 @@ class ShipmentModel {
               .toList() ??
           [],
       senderName: owner?['name'] as String? ?? json['sender_name'] as String?,
+      senderPhone: owner?['phone'] as String? ?? json['sender_phone'] as String?,
       etaMin: json['eta_min'] as int? ?? json['eta_minutes'] as int?,
       distanceKm: double.tryParse('${json['distance_km'] ?? json['distance'] ?? ''}'),
     );
@@ -117,10 +125,12 @@ class ShipmentModel {
         'requires_signature': requiresSignature,
         'requires_photo': requiresPhoto,
         'requires_open': requiresOpen,
+        'is_exchange': isExchange,
         'is_fragile': isFragile,
         'nb_articles': nbArticles,
         'timeline': timeline.map((e) => e.toJson()).toList(),
         'sender_name': senderName,
+        'sender_phone': senderPhone,
         'eta_min': etaMin,
         'distance_km': distanceKm,
       };
@@ -142,10 +152,12 @@ class ShipmentModel {
         requiresSignature: requiresSignature,
         requiresPhoto: requiresPhoto,
         requiresOpen: requiresOpen,
+        isExchange: isExchange,
         isFragile: isFragile,
         nbArticles: nbArticles,
         timeline: timeline,
         senderName: senderName,
+        senderPhone: senderPhone,
         etaMin: etaMin,
         distanceKm: distanceKm,
       );

@@ -11,6 +11,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../../../../core/i18n/app_strings.dart';
 import '../../../../core/network/providers.dart';
 import '../../../../core/providers/locale_provider.dart';
+import '../../../../core/services/scan_beep_service.dart';
 import '../../../../core/theme/colors.dart';
 import '../controllers/pickup_scan_controller.dart';
 
@@ -163,6 +164,7 @@ class _PickupScanScreenState extends ConsumerState<PickupScanScreen>
 
     if (result == ScanAddResult.duplicate) {
       HapticFeedback.heavyImpact();
+      unawaited(ScanBeepService.instance.playError());
       _dupTimer?.cancel();
       setState(() {
         _duplicateBarcode = raw;
@@ -176,6 +178,7 @@ class _PickupScanScreenState extends ConsumerState<PickupScanScreen>
 
     if (result == ScanAddResult.notInManifest) {
       HapticFeedback.vibrate();
+      unawaited(ScanBeepService.instance.playError());
       _dupTimer?.cancel();
       setState(() {
         _outOfManifestBarcode = raw;
@@ -188,6 +191,7 @@ class _PickupScanScreenState extends ConsumerState<PickupScanScreen>
     }
 
     HapticFeedback.lightImpact();
+    unawaited(ScanBeepService.instance.playSuccess());
     if (!_reduceMotion) _counterCtrl.forward(from: 0);
 
     setState(() {
@@ -345,6 +349,14 @@ class _PickupScanScreenState extends ConsumerState<PickupScanScreen>
     final scanState = ref.watch(pickupScanProvider(widget.manifestId));
     final count = scanState.count;
     final sending = scanState.sending;
+    final size = MediaQuery.sizeOf(context);
+    // Match the visible 180×180 viewfinder so codes outside the reserved
+    // zone (near the top bar, counter, or bottom buttons) are ignored.
+    final scanWindow = Rect.fromCenter(
+      center: Offset(size.width / 2, size.height / 2),
+      width: _Viewfinder.size,
+      height: _Viewfinder.size,
+    );
 
     return PopScope(
       canPop: false,
@@ -363,6 +375,7 @@ class _PickupScanScreenState extends ConsumerState<PickupScanScreen>
                   child: MobileScanner(
                     controller: _camera,
                     onDetect: _onDetect,
+                    scanWindow: scanWindow,
                   ),
                 ),
 
@@ -757,12 +770,16 @@ class _Viewfinder extends StatelessWidget {
     required this.reduceMotion,
   });
 
+  // Shared with the build() in PickupScanScreen so the scanWindow rect on
+  // MobileScanner matches the visible frame exactly.
+  // Enlarged from 180 to 240 so wider barcodes fit inside the reserved zone.
+  static const double size = 240.0;
+
   final Animation<double> scanLineAnim;
   final bool reduceMotion;
 
   @override
   Widget build(BuildContext context) {
-    const size = 180.0;
     return SizedBox(
       width: size,
       height: size,

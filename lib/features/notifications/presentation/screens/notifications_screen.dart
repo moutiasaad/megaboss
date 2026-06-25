@@ -28,6 +28,7 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen> {
   @override
   void initState() {
     super.initState();
+    _scrollCtrl.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         setState(() {
@@ -40,8 +41,18 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen> {
 
   @override
   void dispose() {
+    _scrollCtrl.removeListener(_onScroll);
     _scrollCtrl.dispose();
     super.dispose();
+  }
+
+  // Trigger loadMore when the user scrolls within 200 px of the bottom.
+  void _onScroll() {
+    if (!_scrollCtrl.hasClients) return;
+    final pos = _scrollCtrl.position;
+    if (pos.pixels >= pos.maxScrollExtent - 200) {
+      ref.read(notificationsProvider.notifier).loadMore();
+    }
   }
 
   Future<void> _onMarkAllRead(AppStrings s) async {
@@ -76,6 +87,16 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen> {
           Expanded(
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 150),
+              // Default layoutBuilder centers children via Stack — that's why
+              // the inbox card was floating in the middle of the screen.
+              // Anchor to topCenter and make each child fill the slot.
+              layoutBuilder: (currentChild, previousChildren) => Stack(
+                alignment: Alignment.topCenter,
+                children: [
+                  ...previousChildren,
+                  if (currentChild != null) Positioned.fill(child: currentChild),
+                ],
+              ),
               child: notifsAsync.when(
                 data: (state) => _buildData(context, s, state, isDark),
                 loading: () =>
@@ -107,33 +128,39 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen> {
         controller: _scrollCtrl,
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(14, 14, 14, 80),
-        child: MbCard(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              for (final group in groups) ...[
-                if (group.label != null) _DayHeader(label: group.label!, isDark: isDark),
-                for (int i = 0; i < group.entries.length; i++) ...[
-                  if (i > 0 || group.label != null)
-                    Divider(
-                      height: 1,
-                      thickness: 1,
-                      color: isDark ? mbDarkLine2 : mbLine2,
-                    ),
-                  _NotifRow(
-                    key: ValueKey(group.entries[i].id),
-                    entry: group.entries[i],
-                    strings: s,
-                    reduceMotion: _reduceMotion,
-                    animDelay: Duration(
-                        milliseconds: 40 * _globalIndex(groups, group, i)),
-                    onTap: () => _onTap(group.entries[i]),
-                  ),
+        child: Column(
+          children: [
+            MbCard(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final group in groups) ...[
+                    if (group.label != null)
+                      _DayHeader(label: group.label!, isDark: isDark),
+                    for (int i = 0; i < group.entries.length; i++) ...[
+                      if (i > 0 || group.label != null)
+                        Divider(
+                          height: 1,
+                          thickness: 1,
+                          color: isDark ? mbDarkLine2 : mbLine2,
+                        ),
+                      _NotifRow(
+                        key: ValueKey(group.entries[i].id),
+                        entry: group.entries[i],
+                        strings: s,
+                        reduceMotion: _reduceMotion,
+                        animDelay: Duration(
+                            milliseconds: 40 * _globalIndex(groups, group, i)),
+                        onTap: () => _onTap(group.entries[i]),
+                      ),
+                    ],
+                  ],
                 ],
-              ],
-            ],
-          ),
+              ),
+            ),
+            _PaginationFooter(state: state),
+          ],
         ),
       ),
     );
@@ -369,15 +396,28 @@ class _DayHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(top: 10, bottom: 6),
-      child: Text(
-        label.toUpperCase(),
-        style: GoogleFonts.archivo(
-          fontSize: 10.5,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 0.5,
-          color: isDark ? mbDarkInk3 : mbInk3,
-        ),
+      padding: const EdgeInsets.fromLTRB(2, 12, 0, 8),
+      child: Row(
+        children: [
+          Container(
+            width: 3,
+            height: 14,
+            decoration: BoxDecoration(
+              color: mbBlue,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            label.toUpperCase(),
+            style: GoogleFonts.archivo(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.06 * 11,
+              color: isDark ? mbDarkInk2 : mbInk2,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -572,80 +612,104 @@ class _NotifRowState extends State<_NotifRow>
     final semanticLabel =
         '${e.title}, ${e.subtitle}, $relTime${e.read ? '' : ', ${s.notifUnread}'}';
 
+    // Unread rows: faint blue tint + 3px left accent stripe → at-a-glance
+    // visual distinction without breaking the existing card layout.
+    final unreadTint = isDark
+        ? mbBlue.withAlpha(0x1A)
+        : const Color(0xFFF1F6FB); // mbBlue at ~6% opacity for light
+    final rowBg = e.read ? Colors.transparent : unreadTint;
+
     Widget rowBody = Semantics(
       label: semanticLabel,
       button: true,
       child: InkWell(
         onTap: widget.onTap,
-        borderRadius: BorderRadius.circular(8),
-        child: AnimatedOpacity(
-          duration: const Duration(milliseconds: 150),
-          opacity: e.read ? 0.55 : 1.0,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Type icon (36×36, radius 11)
-                Container(
-                  width: 36,
-                  height: 36,
-                  decoration: BoxDecoration(
-                    color: iconBg,
-                    borderRadius: BorderRadius.circular(11),
-                  ),
-                  child: Icon(iconData, color: iconColor, size: 18),
+        child: Container(
+          decoration: BoxDecoration(
+            color: rowBg,
+            border: Border(
+              left: BorderSide(
+                color: e.read ? Colors.transparent : mbBlue,
+                width: 3,
+              ),
+            ),
+          ),
+          padding: EdgeInsets.fromLTRB(e.read ? 14 : 11, 12, 12, 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Type icon (38×38, radius 12)
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: iconBg,
+                  borderRadius: BorderRadius.circular(12),
                 ),
-                const SizedBox(width: 11),
-                // Middle: title (with unread dot) + subtitle
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Title row with inline unread dot
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          Flexible(
-                            child: Text(
-                              e.title,
-                              style: GoogleFonts.archivo(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w700,
-                                height: 1.35,
-                                color: isDark ? mbDarkInk : mbInk,
-                              ),
-                            ),
-                          ),
-                          if (!e.read) ...[
-                            const SizedBox(width: 5),
-                            Container(
-                              width: 7,
-                              height: 7,
-                              decoration: const BoxDecoration(
-                                color: mbRed,
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                          ],
-                        ],
+                child: Icon(iconData, color: iconColor, size: 19),
+              ),
+              const SizedBox(width: 12),
+              // Middle: title + subtitle
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      e.title,
+                      style: GoogleFonts.archivo(
+                        fontSize: 13.5,
+                        fontWeight: e.read ? FontWeight.w600 : FontWeight.w800,
+                        height: 1.3,
+                        color: isDark ? mbDarkInk : mbInk,
                       ),
-                      const SizedBox(height: 2),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (e.subtitle.isNotEmpty) ...[
+                      const SizedBox(height: 3),
                       Text(
-                        '${e.subtitle} · $relTime',
-                        style: GoogleFonts.splineSansMono(
-                          fontSize: 11,
+                        e.subtitle,
+                        style: GoogleFonts.hankenGrotesk(
+                          fontSize: 12.5,
                           fontWeight: FontWeight.w500,
-                          color: isDark ? mbDarkInk3 : mbInk3,
+                          height: 1.35,
+                          color: isDark ? mbDarkInk2 : mbInk2,
                         ),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
                     ],
-                  ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+              const SizedBox(width: 10),
+              // Right: timestamp + unread dot stacked
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    relTime,
+                    style: GoogleFonts.splineSansMono(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w600,
+                      color: isDark ? mbDarkInk3 : mbInk3,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  if (!e.read)
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                        color: mbRed,
+                        shape: BoxShape.circle,
+                      ),
+                    )
+                  else
+                    const SizedBox(height: 8),
+                ],
+              ),
+            ],
           ),
         ),
       ),
@@ -719,4 +783,26 @@ String _relativeTime(DateTime ts, AppStrings s) {
   final hh = local.hour.toString().padLeft(2, '0');
   final mm = local.minute.toString().padLeft(2, '0');
   return '$hh:$mm';
+}
+
+// ── Pagination footer (spinner while loading more, hidden when nothing more) ─
+
+class _PaginationFooter extends StatelessWidget {
+  const _PaginationFooter({required this.state});
+  final NotifState state;
+
+  @override
+  Widget build(BuildContext context) {
+    if (state.loadingMore) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 16),
+        child: SizedBox(
+          width: 22,
+          height: 22,
+          child: CircularProgressIndicator(strokeWidth: 2, color: mbBlue),
+        ),
+      );
+    }
+    return const SizedBox(height: 8);
+  }
 }

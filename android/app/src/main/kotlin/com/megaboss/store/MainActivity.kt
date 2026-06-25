@@ -1,4 +1,4 @@
-package com.example.megaboss
+package com.megaboss.store
 
 import android.content.Context
 import android.os.Build

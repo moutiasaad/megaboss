@@ -13,6 +13,7 @@ import '../../../../core/theme/colors.dart';
 import '../../../../core/theme/spacing.dart';
 import '../../../../core/widgets/mb_fab.dart';
 import '../../../../core/widgets/mb_offline_banner.dart';
+import '../../../motifs/data/models/motif_model.dart';
 import '../../data/models/pickup_model.dart';
 import '../controllers/pickup_detail_controller.dart';
 import '../controllers/pickups_controller.dart';
@@ -35,16 +36,23 @@ class PickupDetailScreen extends ConsumerWidget {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final pickup = detailAsync.valueOrNull;
 
-    final allCollected = pickup != null &&
-        pickup.totalShipments > 0 &&
-        pickup.collectedCount >= pickup.totalShipments;
+    final isClosed = pickup?.status == PickupStatus.completed;
+    final hasPending = pickup == null ||
+        pickup.shipments.any((s) =>
+            s.status == PickupShipmentStatus.pending ||
+            s.status == 'ready_for_pickup');
 
     return Scaffold(
       backgroundColor: isDark ? mbDarkBg : mbSurface2,
-      floatingActionButton: MbFab(
-        label: s.pkdScanRapide,
-        onTap: () => context.push('/scan/pickup?manifest=$id'),
-      ),
+      floatingActionButton: (!isClosed && hasPending)
+          ? MbFab(
+              label: s.pkdScanRapide,
+              onTap: () async {
+                await context.push('/scan/pickup?manifest=$id');
+                ref.invalidate(pickupDetailProvider(id));
+              },
+            )
+          : null,
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -60,14 +68,6 @@ class PickupDetailScreen extends ConsumerWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
               child: MbOfflineBanner(strings: s, pendingCount: pendingOps),
-            ),
-
-          // "Tous collectés" banner with Clôturer CTA
-          if (allCollected)
-            _DoneBanner(
-              s: s,
-              onClose: () =>
-                  ref.read(pickupDetailProvider(id).notifier).close(),
             ),
 
           // (B) Section label "COLIS ATTENDUS · n"
@@ -185,11 +185,16 @@ class PickupDetailScreen extends ConsumerWidget {
     int shipmentId,
     AppStrings s,
   ) async {
+    // Cached motifs (refresh runs in background via motifsProvider).
+    final motifsAsync = ref.read(motifsProvider);
+    final motifs =
+        motifsAsync.valueOrNull?.refusalReasons ?? const <MotifModel>[];
+
     final reason = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
-      builder: (_) => _RefuseSheet(s: s),
+      builder: (_) => _RefuseSheet(s: s, motifs: motifs),
     );
     if (reason == null) return;
     HapticFeedback.mediumImpact();
@@ -357,65 +362,6 @@ class _HeaderStatusBadge extends StatelessWidget {
   }
 }
 
-// ── Done banner ────────────────────────────────────────────────────────────────
-
-class _DoneBanner extends StatelessWidget {
-  const _DoneBanner({required this.s, required this.onClose});
-  final AppStrings s;
-  final VoidCallback onClose;
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    return Container(
-      margin: const EdgeInsets.fromLTRB(14, 10, 14, 0),
-      padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
-      decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF052E14) : mbOkBg,
-        borderRadius: BorderRadius.circular(MbRadius.cardSmall),
-        border: Border.all(color: mbOk.withAlpha(0x55), width: 1),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.check_circle_rounded, color: mbOk, size: 18),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              s.pkdAllCollected,
-              style: GoogleFonts.archivo(
-                fontSize: 12.5,
-                fontWeight: FontWeight.w700,
-                color: mbOk,
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          FilledButton(
-            onPressed: onClose,
-            style: FilledButton.styleFrom(
-              backgroundColor: mbOk,
-              minimumSize: const Size(0, 34),
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(MbRadius.button),
-              ),
-            ),
-            child: Text(
-              s.pkdManifestClose,
-              style: GoogleFonts.archivo(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: Colors.white,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 // ── Expected shipment row ──────────────────────────────────────────────────────
 
 class _ExpectedRow extends StatelessWidget {
@@ -452,7 +398,7 @@ class _ExpectedRow extends StatelessWidget {
     } else if (isRefused) {
       dotColor = mbRed;
       subLine = shipment.refuseReason != null
-          ? s.pkdRefusedReason(_localizeReason(shipment.refuseReason!, s))
+          ? s.pkdRefusedReason(shipment.refuseReason!)
           : s.pkdStatusRefused;
     } else {
       dotColor = mbBlue;
@@ -529,12 +475,6 @@ class _ExpectedRow extends StatelessWidget {
     );
   }
 
-  String _localizeReason(String key, AppStrings s) => switch (key) {
-        'packaging' => s.pkdRefusePackaging,
-        'missing' => s.pkdRefuseMissing,
-        'damaged' => s.pkdRefuseDamaged,
-        _ => s.pkdRefuseOther,
-      };
 }
 
 class _ActionBtn extends StatelessWidget {
@@ -577,18 +517,15 @@ class _ActionBtn extends StatelessWidget {
 // ── Refuse reason bottom sheet ─────────────────────────────────────────────────
 
 class _RefuseSheet extends StatelessWidget {
-  const _RefuseSheet({required this.s});
+  const _RefuseSheet({required this.s, required this.motifs});
   final AppStrings s;
+  // Motifs fetched from GET /driver/motifs → refusal_reasons. Each item's
+  // `value` is sent verbatim to the API (matches the web app).
+  final List<MotifModel> motifs;
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final reasons = [
-      (s.pkdRefusePackaging, 'packaging'),
-      (s.pkdRefuseMissing, 'missing'),
-      (s.pkdRefuseDamaged, 'damaged'),
-      (s.pkdRefuseOther, 'other'),
-    ];
 
     return Container(
       decoration: BoxDecoration(
@@ -628,25 +565,40 @@ class _RefuseSheet extends StatelessWidget {
               ),
             ),
             // Reason options
-            ...reasons.map(
-              (r) => ListTile(
-                title: Text(
-                  r.$1,
+            if (motifs.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 18, vertical: 18),
+                child: Text(
+                  '...',
                   style: GoogleFonts.hankenGrotesk(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                    color: isDark ? mbDarkInk : mbInk,
+                    fontSize: 13,
+                    color: isDark ? mbDarkInk3 : mbInk3,
                   ),
                 ),
-                leading: Icon(Icons.circle_outlined,
-                    size: 18,
-                    color: isDark ? mbDarkInk3 : mbInk3),
-                onTap: () => Navigator.of(context).pop(r.$2),
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
-                dense: true,
+              )
+            else
+              ...motifs.map(
+                (m) => ListTile(
+                  title: Text(
+                    (m.emoji != null && m.emoji!.isNotEmpty)
+                        ? '${m.emoji}  ${m.value}'
+                        : m.value,
+                    style: GoogleFonts.hankenGrotesk(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                      color: isDark ? mbDarkInk : mbInk,
+                    ),
+                  ),
+                  leading: Icon(Icons.circle_outlined,
+                      size: 18,
+                      color: isDark ? mbDarkInk3 : mbInk3),
+                  onTap: () => Navigator.of(context).pop(m.value),
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
+                  dense: true,
+                ),
               ),
-            ),
             // Cancel
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),

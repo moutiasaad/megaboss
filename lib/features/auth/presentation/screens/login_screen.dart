@@ -88,7 +88,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       // ── A · Language selector ─────────────────────────
-                      _LanguageSelector(current: locale.languageCode),
+                      // _LanguageSelector(current: locale.languageCode),
                       const SizedBox(height: MbSpacing.xl),
 
                       // ── B · Logo ──────────────────────────────────────

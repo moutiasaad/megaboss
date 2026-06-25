@@ -19,13 +19,16 @@ import 'features/pickup/domain/repositories/pickup_repository.dart';
 import 'features/runsheets/domain/repositories/runsheet_repository.dart';
 import 'features/shipments/domain/repositories/shipment_repository.dart';
 import 'features/stats/domain/repositories/stats_repository.dart';
+import 'features/motifs/domain/repositories/motifs_repository.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await Hive.initFlutter();
 
-  // Open all Hive boxes in parallel — record .wait preserves each return type.
+  // Open all Hive boxes in parallel. Record `.wait` only supports up to 9
+  // elements, so the motifs box rides alongside in a parallel Future.wait.
+  final motifsBoxFuture = MotifsRepository.openBox();
   final (
     _,
     driverBox,
@@ -47,6 +50,7 @@ void main() async {
     StatsRepository.openBox(),
     OfflineQueue.open(),
   ).wait;
+  final motifsBox = await motifsBoxFuture;
 
   runApp(
     ProviderScope(
@@ -58,6 +62,7 @@ void main() async {
         callBoxProvider.overrideWithValue(callBox),
         notificationBoxProvider.overrideWithValue(notifBox),
         statsBoxProvider.overrideWithValue(statsBox),
+        motifsBoxProvider.overrideWithValue(motifsBox),
         offlineQueueProvider.overrideWithValue(offlineQueue),
       ],
       child: const MegaBossApp(),

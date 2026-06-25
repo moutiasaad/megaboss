@@ -1,3 +1,4 @@
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/models/pickup_model.dart';
 import '../../../../core/network/providers.dart';
@@ -74,7 +75,10 @@ class PickupsController extends AsyncNotifier<PickupsState> {
   @override
   Future<PickupsState> build() async {
     final repo = ref.read(pickupRepositoryProvider);
-    final cached = repo.cachedActive;
+    // Merged cache (active + locally-known done) first, fall back to raw active
+    final cached = repo.cachedList.isNotEmpty
+        ? repo.cachedList
+        : repo.cachedActive;
     if (cached.isNotEmpty) {
       Future.microtask(_backgroundRefresh);
       return PickupsState(filter: '', allItems: _sorted(cached), offline: false);
@@ -95,9 +99,12 @@ class PickupsController extends AsyncNotifier<PickupsState> {
       }
     } catch (_) {
       final current = state.valueOrNull;
-      if (current != null) {
-        state = AsyncData(current.copyWith(offline: true));
-      }
+      if (current == null) return;
+      final conn = Connectivity();
+      final results = await conn.checkConnectivity();
+      final isActuallyOffline =
+          !results.any((r) => r != ConnectivityResult.none);
+      state = AsyncData(current.copyWith(offline: isActuallyOffline));
     }
   }
 

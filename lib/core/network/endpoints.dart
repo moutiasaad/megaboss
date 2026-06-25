@@ -53,9 +53,14 @@ class Endpoints {
 
   // ── Notifications ───────────────────────────────────────────────────────────
   static const String notifications = '/driver/notifications';
+  static const String notificationsUnreadCount =
+      '/driver/notifications/unread-count';
   static String notificationRead(int id) => '/driver/notifications/$id/read';
   static const String notificationsReadAll = '/driver/notifications/read-all';
 
   // ── Stats ───────────────────────────────────────────────────────────────────
   static const String stats = '/driver/stats';
+
+  // ── Motifs (return + refusal reasons) ───────────────────────────────────────
+  static const String motifs = '/driver/motifs';
 }
